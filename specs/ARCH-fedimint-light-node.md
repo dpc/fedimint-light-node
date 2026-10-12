@@ -30,7 +30,9 @@ replacing that checkpoint. HTTP transport cancellation has lower-layer DNS and
 connection limits documented in [SECURITY.md](../SECURITY.md); it does not inherit
 the direct P2P socket-lifecycle guarantees. A thin operational executable owns
 runtime and process signals while exposing bootstrap, offline status/protection,
-header visits and body-file export through these APIs. Guardian integration below
+header visits, body-file export and bounded transaction submission through these APIs.
+Submission shares the exclusive network owner without a mempool or retry queue;
+a completed write establishes neither acceptance nor propagation. Guardian integration below
 remains unimplemented.
 
 ## Boundaries and flow

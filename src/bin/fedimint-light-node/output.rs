@@ -4,9 +4,48 @@ use std::path::Path;
 
 use bitcoin::Block;
 use bitcoin::consensus::Encodable;
+use fedimint_light_node::transaction_submission_report::TransactionSubmissionReport;
 use fedimint_light_node::validated_header_store::ValidatedHeaderStore;
 
 use crate::Result;
+
+/// Print every local write observation without claiming remote acceptance.
+pub fn submission(report: &TransactionSubmissionReport) -> Result<()> {
+    let mut out = io::stdout().lock();
+    writeln!(out, "txid={}", report.txid)?;
+    writeln!(out, "wtxid={}", report.wtxid)?;
+    writeln!(out, "submitted={}", report.submitted())?;
+    writeln!(out, "sent_bytes_reserved={}", report.sent_bytes)?;
+    writeln!(out, "received_bytes_reserved={}", report.received_bytes)?;
+    for attempt in &report.attempts {
+        writeln!(
+            out,
+            "peer={} payload_write_started={} result={}",
+            attempt.peer,
+            attempt.payload_write_started,
+            match &attempt.result {
+                Ok(()) => "submitted-local-write-only".to_owned(),
+                Err(error) => error.to_string(),
+            }
+        )?;
+        if let Some(result) = &attempt.post_write {
+            writeln!(
+                out,
+                "peer={} post_write={}",
+                attempt.peer,
+                match result {
+                    Ok(()) => "pong-not-acceptance".to_owned(),
+                    Err(error) => error.to_string(),
+                }
+            )?;
+        }
+    }
+    writeln!(
+        out,
+        "acceptance=unproven propagation=unproven confirmation=unproven"
+    )?;
+    Ok(())
+}
 
 /// Print selected state without conflating retained headers and body availability.
 pub fn status(store: &ValidatedHeaderStore) -> Result<()> {

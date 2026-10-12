@@ -9,7 +9,7 @@ use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::p2p::message_network::VersionMessage;
 use tokio::net::TcpStream;
 
-use crate::header_wire::{Message, receive, send};
+use crate::header_wire::{Message, receive, send_bounded};
 use crate::sync_error::SyncError;
 
 /// Connect and negotiate without trusting the remote advertised height.
@@ -18,6 +18,29 @@ pub(crate) async fn handshake(
     height: u64,
     bytes: &mut usize,
 ) -> Result<(TcpStream, ServiceFlags), SyncError> {
+    let mut sent = usize::MAX;
+    let (stream, version) = handshake_inner(peer, height, bytes, &mut sent, false).await?;
+    Ok((stream, version.services))
+}
+
+/// Require a witness-aware transaction-receiving peer and budget every control write.
+pub(crate) async fn submission_handshake(
+    peer: SocketAddr,
+    bytes: &mut usize,
+    sent: &mut usize,
+) -> Result<TcpStream, SyncError> {
+    let (stream, _) = handshake_inner(peer, 0, bytes, sent, true).await?;
+    Ok(stream)
+}
+
+/// Share the bounded handshake without changing header/body peer policy.
+async fn handshake_inner(
+    peer: SocketAddr,
+    height: u64,
+    bytes: &mut usize,
+    sent: &mut usize,
+    submission: bool,
+) -> Result<(TcpStream, VersionMessage), SyncError> {
     let mut stream = TcpStream::connect(peer).await?;
     let mut version = VersionMessage::new(
         ServiceFlags::NONE,
@@ -35,25 +58,41 @@ pub(crate) async fn handshake(
         height.min(i32::MAX as u64) as i32,
     );
     version.relay = false;
-    send(&mut stream, NetworkMessage::Version(version)).await?;
-    let mut services = None;
+    if submission {
+        // rust-bitcoin's constructor still defaults to 70001. Advertise the
+        // witness-era protocol we actually use, without opting into wtxid relay.
+        version.version = 70012;
+    }
+    send_bounded(&mut stream, NetworkMessage::Version(version), sent).await?;
+    let mut remote = None;
     for _ in 0..32 {
         match receive(&mut stream, bytes).await? {
-            Message::Version(version) if services.is_none() => {
+            Message::Version(version) if remote.is_none() => {
                 if version.version < 70001
                     || !(version.services.has(ServiceFlags::NETWORK)
                         || version.services.has(ServiceFlags::NETWORK_LIMITED))
                 {
                     return Err(SyncError::Protocol("unsupported peer version or services"));
                 }
-                services = Some(version.services);
-                send(&mut stream, NetworkMessage::Verack).await?;
+                if submission
+                    && (version.version < 70012
+                        || !version.relay
+                        || !version.services.has(ServiceFlags::WITNESS))
+                {
+                    return Err(SyncError::Protocol(
+                        "peer declines relay or lacks witness support",
+                    ));
+                }
+                remote = Some(version);
+                send_bounded(&mut stream, NetworkMessage::Verack, sent).await?;
             }
-            Message::Verack if services.is_some() => {
-                return Ok((stream, services.expect("version received")));
+            Message::Verack if remote.is_some() => {
+                return Ok((stream, remote.expect("version received")));
             }
-            Message::Ping(nonce) => send(&mut stream, NetworkMessage::Pong(nonce)).await?,
-            Message::Ignore => {}
+            Message::Ping(nonce) => {
+                send_bounded(&mut stream, NetworkMessage::Pong(nonce), sent).await?
+            }
+            Message::Ignore | Message::Pong(_) => {}
             _ => return Err(SyncError::Protocol("unexpected handshake message")),
         }
     }

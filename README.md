@@ -3,7 +3,8 @@
 An embeddable Rust Bitcoin backend for guardians that retain recent headers
 and retrieve complete blocks from peers without full consensus validation.
 This experimental implementation can bootstrap mainnet history, synchronize
-headers, and retrieve complete blocks. **It is not a Bitcoin Core substitute,
+headers, retrieve complete blocks, and submit caller-supplied transactions.
+**It is not a Bitcoin Core substitute,
 a full consensus validator, or a production-ready guardian backend.**
 
 The library provides tested retention-window arithmetic and a synchronous,
@@ -24,7 +25,7 @@ The `HeaderSync` API retrieves actual mainnet headers and complete matching
 witness-bearing blocks on demand over outbound Bitcoin P2P.
 The `bootstrap` API initializes a fresh store from trusted HTTPS source agreement
 and bounded P2P ancestry. A thin executable exposes these library operations;
-there is no guardian adapter, RPC server, transaction broadcast or fee estimator.
+there is no guardian adapter, RPC server, mempool or fee estimator.
 The intended boundaries are described in
 [ARCH-fedimint-light-node](specs/ARCH-fedimint-light-node.md).
 
@@ -70,7 +71,7 @@ protection height. It always labels freshness and body availability as unproven:
 an empty peer reply or a stored tip is not a health check. No wallet finality delay
 is subtracted. A retained block can still be unavailable from every configured peer.
 Only one process should own a database at a time: stop sync before running offline
-status, fetch or protect against the same database. redb enforces exclusive opens.
+status, fetch, broadcast or protect against the same database. redb enforces exclusive opens.
 
 Choose a retained height and its expected hash (for example, copy `selected_height`
 and `selected_hash` from status). Fetch checks that selection before requesting it:
@@ -93,6 +94,25 @@ rather than retrying with deletion or overwrite. Fetch never automatically prote
 history. Protection is persistent and monotonic; a wrong hash fails, and there is
 no unprotect operation. Applications must coordinate protection with their own
 durable consumer state before promising irreversible results.
+
+Submit a canonical **binary** raw transaction from a trusted regular file (not
+hex text, a PSBT, symlink or FIFO):
+
+```sh
+"$NODE" --db "$DB" broadcast --peer "$PEER" --input ./node-data/transaction.raw
+```
+
+Broadcast tries up to three configured peers sequentially, with 20 seconds per
+visit, 60 seconds total and five seconds of pacing before each connection.
+It admits at most 400,000 bytes and 400,000 weight units; these are resource
+ceilings, **not** script, spend, fee or standardness validation. It reserves at
+most 2 MB received and 1,210,000 sent bytes across the whole call, including
+handshakes and incomplete frames. No transaction is persisted or retried later.
+Output reports identifiers and each attempt; exit success requires at least
+one completed local payload write, not mempool acceptance, propagation or
+confirmation. Cancellation may follow delivery and loses the in-flight report;
+explicit retry/rebroadcast is allowed. See [submission semantics and protocol
+rationale](docs/transaction-submission.md).
 
 All commands accept `--capacity` (1..105,120; default 52,560) and `--cache-mib`
 (1..64; default 8). Capacity must match creation on every reopen; it cannot resize

@@ -59,3 +59,20 @@ publication, the caller must own the parent directory and inspect an output afte
 a publication error rather than automatically deleting it. Status reports selected
 state, never proven freshness, consensus validity or body availability. Protection
 is an explicit irreversible rollback-floor choice, not a consensus finality claim.
+
+Transaction submission accepts caller-supplied bytes, not validated spends.
+The library bounds serialized size and weight before allocating outbound payloads;
+it does not check scripts, input values, fees, standardness or mempool policy.
+The CLI reads only bounded regular binary files in a caller-owned trusted directory,
+refusing symlinks and special files. Local file I/O is synchronous; parent-directory
+ownership, not a race-proof hostile-path sandbox, protects the pre-open check.
+Neither interface persists transactions or creates a retry queue.
+
+A completed transaction write is only a local transport observation, not proof of
+peer receipt, acceptance, propagation or confirmation. A bounded post-write ping/pong
+exchange reduces premature closing with unread control messages but is not an
+acceptance acknowledgement or a guarantee against TCP resets. A peer can silently
+ignore transactions, including while synchronizing. Cancellation loses the in-flight
+report and may occur after delivery to one or more peers. Explicit retries can submit
+the same transaction again. Configured peers see the transaction and source address;
+this direct submission is not a privacy-preserving broadcast protocol.

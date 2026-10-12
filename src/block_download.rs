@@ -108,7 +108,7 @@ async fn request_block(
             Message::Block(frame, payload) => return Ok(frame.decode(&payload, hash, rules)?),
             Message::NotFound => return Err(BlockPeerError::NotFound),
             Message::Ping(nonce) => send(stream, NetworkMessage::Pong(nonce)).await?,
-            Message::Ignore => {}
+            Message::Ignore | Message::Pong(_) => {}
             _ => return Err(SyncError::Protocol("unexpected block response").into()),
         }
     }

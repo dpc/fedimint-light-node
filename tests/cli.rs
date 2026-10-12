@@ -353,18 +353,18 @@ fn handshake(stream: &mut TcpStream) {
     assert!(matches!(read(stream), NetworkMessage::Version(_)));
     let services = ServiceFlags::NETWORK | ServiceFlags::WITNESS;
     let address = Address::new(&stream.local_addr().unwrap(), services);
-    send(
-        stream,
-        NetworkMessage::Version(VersionMessage::new(
-            services,
-            0,
-            address.clone(),
-            address,
-            42,
-            "/cli-test/".into(),
-            3,
-        )),
+    let mut version = VersionMessage::new(
+        services,
+        0,
+        address.clone(),
+        address,
+        42,
+        "/cli-test/".into(),
+        3,
     );
+    version.version = 70016;
+    version.relay = true;
+    send(stream, NetworkMessage::Version(version));
     send(stream, NetworkMessage::Verack);
     assert_eq!(read(stream), NetworkMessage::Verack);
 }
@@ -480,6 +480,151 @@ fn sigterm_cancels_owned_socket_and_allows_offline_reopen() {
     let result = child.finish();
     assert_eq!(result.status.code(), Some(130));
     assert!(String::from_utf8_lossy(&result.stdout).contains("selected_height=3"));
+    assert_eq!(stream.read(&mut [0; 1]).unwrap(), 0);
+    assert!(
+        command(&db)
+            .arg("status")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn broadcast_delivers_witness_bytes_and_reports_only_local_write_success() {
+    use bitcoin::p2p::message::NetworkMessage;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("chain");
+    create(&db);
+    let input = dir.path().join("transaction.raw");
+    let mut tx = bitcoin::blockdata::constants::genesis_block(Network::Bitcoin)
+        .txdata
+        .remove(0);
+    tx.input[0].witness = bitcoin::Witness::from_slice(&[b"witness bytes"]);
+    let bytes = bitcoin::consensus::serialize(&tx);
+    std::fs::write(&input, &bytes).unwrap();
+    let before = stdout(&command(&db).arg("status").output().unwrap());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let child = Child::start(
+        command(&db)
+            .args([
+                "broadcast",
+                "--peer",
+                &listener.local_addr().unwrap().to_string(),
+                "--retry-seconds",
+                "1",
+                "--input",
+            ])
+            .arg(&input),
+    );
+    let mut stream = accept(&listener);
+    handshake(&mut stream);
+    assert_eq!(read(&mut stream), NetworkMessage::Tx(tx));
+    let NetworkMessage::Ping(nonce) = read(&mut stream) else {
+        panic!("expected ping")
+    };
+    send(&mut stream, NetworkMessage::Pong(nonce));
+    let output = stdout(&child.finish());
+    assert!(output.contains("submitted=1"));
+    assert!(output.contains("submitted-local-write-only"));
+    assert!(output.contains("pong-not-acceptance"));
+    assert!(output.contains("acceptance=unproven propagation=unproven confirmation=unproven"));
+    assert_eq!(std::fs::read(&input).unwrap(), bytes);
+    assert_eq!(
+        stdout(&command(&db).arg("status").output().unwrap()),
+        before
+    );
+}
+
+#[test]
+fn broadcast_rejects_malformed_oversized_and_nonregular_files_offline() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("absent");
+    let input = dir.path().join("tx");
+    for bytes in [vec![], b"0100000001".to_vec(), vec![0; 400_001]] {
+        std::fs::write(&input, bytes).unwrap();
+        let result = command(&db)
+            .args(["broadcast", "--peer", "127.0.0.1:1", "--input"])
+            .arg(&input)
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(!db.exists());
+    }
+    let result = command(&db)
+        .args(["broadcast", "--peer", "127.0.0.1:1", "--input"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&result.stderr).contains("regular file"));
+    #[cfg(unix)]
+    {
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&input, &link).unwrap();
+        let result = command(&db)
+            .args(["broadcast", "--peer", "127.0.0.1:1", "--input"])
+            .arg(&link)
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&result.stderr).contains("regular file"));
+        let fifo = dir.path().join("fifo");
+        assert!(
+            Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let child = Child::start(
+            command(&db)
+                .args(["broadcast", "--peer", "127.0.0.1:1", "--input"])
+                .arg(&fifo),
+        );
+        assert!(String::from_utf8_lossy(&child.finish().stderr).contains("regular file"));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn broadcast_sigterm_after_delivery_reports_indeterminate_and_releases_store() {
+    use bitcoin::p2p::message::NetworkMessage;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("chain");
+    create(&db);
+    let input = dir.path().join("tx");
+    let tx = bitcoin::blockdata::constants::genesis_block(Network::Bitcoin)
+        .txdata
+        .remove(0);
+    std::fs::write(&input, bitcoin::consensus::serialize(&tx)).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let child = Child::start(
+        command(&db)
+            .args([
+                "broadcast",
+                "--peer",
+                &listener.local_addr().unwrap().to_string(),
+                "--retry-seconds",
+                "1",
+                "--input",
+            ])
+            .arg(&input),
+    );
+    let mut stream = accept(&listener);
+    handshake(&mut stream);
+    assert!(matches!(read(&mut stream), NetworkMessage::Tx(_)));
+    assert!(matches!(read(&mut stream), NetworkMessage::Ping(_)));
+    let pid = child.process.as_ref().unwrap().id().to_string();
+    assert!(
+        Command::new("sh")
+            .args(["-c", "kill -TERM \"$1\"", "sh", &pid])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let result = child.finish();
+    assert_eq!(result.status.code(), Some(130));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("delivery is indeterminate"));
     assert_eq!(stream.read(&mut [0; 1]).unwrap(), 0);
     assert!(
         command(&db)

@@ -8,6 +8,8 @@
 //! authenticates bounded recent ancestry into it. No API establishes full consensus
 //! validity or objective freshness. Outbound mainnet header synchronization and
 //! on-demand witness-bearing block retrieval continue without those sources.
+//! The same exclusive owner submits bounded caller-owned transactions; a completed
+//! local write establishes neither peer acceptance, propagation nor confirmation.
 //! Guardian integration is not implemented.
 
 pub mod block_decode;
@@ -31,6 +33,9 @@ pub mod store_config;
 pub mod store_error;
 pub mod sync_config;
 pub mod sync_error;
+pub mod transaction_decode;
+pub mod transaction_submission_config;
+pub mod transaction_submission_report;
 pub mod v1_block_frame;
 pub mod validated_header_store;
 
@@ -41,3 +46,4 @@ mod encoded_size_limit;
 mod header_wire;
 mod peer_handshake;
 mod store_format;
+mod transaction_submission;

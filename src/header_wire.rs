@@ -28,6 +28,8 @@ pub(crate) enum Message {
     Headers(Vec<Header>),
     /// Keepalive challenge.
     Ping(u64),
+    /// Keepalive response, not an acknowledgement of transaction acceptance.
+    Pong(u64),
     /// Bounded, uninterpreted protocol chatter.
     Ignore,
     /// Body admitted only during an explicit block request.
@@ -38,12 +40,21 @@ pub(crate) enum Message {
 
 /// Send one locally constructed message; no peer-sized outbound allocation.
 pub(crate) async fn send(stream: &mut TcpStream, message: NetworkMessage) -> Result<(), SyncError> {
-    stream
-        .write_all(&serialize(&RawNetworkMessage::new(
-            Network::Bitcoin.magic(),
-            message,
-        )))
-        .await?;
+    let mut remaining = usize::MAX;
+    send_bounded(stream, message, &mut remaining).await
+}
+
+/// Reserve a small locally constructed control frame before writing it.
+pub(crate) async fn send_bounded(
+    stream: &mut TcpStream,
+    message: NetworkMessage,
+    remaining: &mut usize,
+) -> Result<(), SyncError> {
+    let frame = serialize(&RawNetworkMessage::new(Network::Bitcoin.magic(), message));
+    *remaining = remaining
+        .checked_sub(frame.len())
+        .ok_or(SyncError::Protocol("sent-byte budget"))?;
+    stream.write_all(&frame).await?;
     Ok(())
 }
 
@@ -92,11 +103,11 @@ pub(crate) async fn receive_inner(
         b"block\0\0\0\0\0\0\0" => (block_frame.expect("admitted block").payload_len(), true),
         b"version\0\0\0\0\0" => (350, true),
         b"headers\0\0\0\0\0" => (3 + MAX_HEADERS * 81, true),
-        b"ping\0\0\0\0\0\0\0\0" => (8, true),
+        b"ping\0\0\0\0\0\0\0\0" | b"pong\0\0\0\0\0\0\0\0" => (8, true),
         b"verack\0\0\0\0\0\0" | b"sendheaders\0" | b"sendaddrv2\0\0" | b"wtxidrelay\0\0" => {
             (0, false)
         }
-        b"pong\0\0\0\0\0\0\0\0" | b"feefilter\0\0\0" => (8, false),
+        b"feefilter\0\0\0" => (8, false),
         b"sendcmpct\0\0\0" => (9, false),
         b"inv\0\0\0\0\0\0\0\0\0" | b"notfound\0\0\0\0" => (1_800_003, false),
         b"addr\0\0\0\0\0\0\0\0" => (30_003, false),
@@ -140,6 +151,11 @@ pub(crate) async fn receive_inner(
             payload
                 .try_into()
                 .map_err(|_| SyncError::Protocol("ping length"))?,
+        ))),
+        b"pong\0\0\0\0\0\0\0\0" => Ok(Message::Pong(u64::from_le_bytes(
+            payload
+                .try_into()
+                .map_err(|_| SyncError::Protocol("pong length"))?,
         ))),
         _ => Ok(Message::Ignore),
     }

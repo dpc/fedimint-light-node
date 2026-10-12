@@ -55,7 +55,7 @@ pub(crate) async fn history(
                                 Message::Ping(nonce) => {
                                     send(&mut stream, NetworkMessage::Pong(nonce)).await?
                                 }
-                                Message::Ignore => {}
+                                Message::Ignore | Message::Pong(_) => {}
                                 _ => {
                                     return Err(SyncError::Protocol(
                                         "unexpected bootstrap message",

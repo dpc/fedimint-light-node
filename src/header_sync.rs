@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use bitcoin::hashes::Hash;
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::p2p::message_blockdata::GetHeadersMessage;
-use bitcoin::{Block, BlockHash, Target, block::Header};
+use bitcoin::{Block, BlockHash, Target, Transaction, block::Header};
 use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 
@@ -17,6 +17,11 @@ use crate::peer_handshake::handshake;
 use crate::store_error::StoreError;
 use crate::sync_config::SyncConfig;
 use crate::sync_error::SyncError;
+use crate::transaction_submission::submit;
+use crate::transaction_submission_config::TransactionSubmissionConfig;
+use crate::transaction_submission_report::{
+    TransactionSubmissionError, TransactionSubmissionReport,
+};
 use crate::validated_header_store::ValidatedHeaderStore;
 
 /// Caller-driven mainnet v1 header synchronization from an initialized trusted store.
@@ -128,6 +133,41 @@ impl HeaderSync {
     /// Return storage ownership; no network work or background tasks remain.
     pub fn into_store(self) -> ValidatedHeaderStore {
         self.store
+    }
+
+    /// Submit a caller-owned transaction over bounded sequential mainnet connections.
+    ///
+    /// Admission bounds bytes and weight before outbound allocation; it does not
+    /// check scripts, spends, fees, standardness or consensus validity. This exclusive
+    /// borrow shares the network owner and peer rotation with sync and block retrieval.
+    /// No queue, cache, retry task, database write or background socket is created.
+    ///
+    /// An `Ok` report can contain zero submissions: inspect `report.submitted()`.
+    /// Only a completed full frame write counts, not peer receipt, mempool acceptance,
+    /// propagation or confirmation. All selected peers are tried even after success.
+    /// A bounded post-write ping/pong observation reduces premature connection close;
+    /// it is not an acceptance acknowledgement and cannot undo a completed write.
+    /// Dropping the future closes the current socket and loses its report, including
+    /// earlier successes. Cancellation or a failed started write can occur after the
+    /// peer received the transaction: the outcome is indeterminate. Explicit caller
+    /// retry/rebroadcast is allowed; there is no deduplication or exactly-once promise.
+    /// Bounded synchronous serialization and hashing cannot be interrupted.
+    pub async fn submit_transaction(
+        &mut self,
+        transaction: &Transaction,
+        config: TransactionSubmissionConfig,
+    ) -> Result<TransactionSubmissionReport, TransactionSubmissionError> {
+        if self.stopped {
+            return Err(TransactionSubmissionError::Stopped);
+        }
+        submit(
+            transaction,
+            &self.config.peers,
+            &mut self.next_peer,
+            self.config.retry_delay,
+            config,
+        )
+        .await
     }
 
     /// Retrieve a complete witness-bearing block matching a retained selected hash.
@@ -358,7 +398,7 @@ async fn request(
         match receive(stream, &mut bytes).await? {
             Message::Headers(headers) => return Ok(headers),
             Message::Ping(nonce) => send(stream, NetworkMessage::Pong(nonce)).await?,
-            Message::Ignore => {}
+            Message::Ignore | Message::Pong(_) => {}
             _ => return Err(SyncError::Protocol("unexpected request message")),
         }
     }

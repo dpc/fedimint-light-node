@@ -46,3 +46,5 @@ CPUs
 bcachefs
 failover
 subprocess
+standardness
+nonces

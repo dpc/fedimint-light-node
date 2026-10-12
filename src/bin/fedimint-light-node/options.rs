@@ -97,6 +97,20 @@ pub enum Command {
         #[arg(long, default_value_t = 120, value_parser = clap::value_parser!(u64).range(1..=120))]
         total_seconds: u64,
     },
+    /// Write a transaction to up to three peers; no acceptance/confirmation guarantee.
+    Broadcast {
+        #[command(flatten)]
+        network: Network,
+        /// Canonical binary transaction in a regular file in a trusted directory.
+        #[arg(long)]
+        input: PathBuf,
+        /// Delay before every attempt, included in the total deadline.
+        #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u64).range(1..=3600))]
+        retry_seconds: u64,
+        /// Total pacing and submission deadline, not an inactivity timeout.
+        #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..=120))]
+        total_seconds: u64,
+    },
     /// Persist a monotonic rollback floor for consumed history, offline.
     Protect {
         /// Retained consumed height; this cannot undo an earlier protection choice.

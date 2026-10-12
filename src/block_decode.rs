@@ -69,49 +69,58 @@ fn preflight(mut bytes: &[u8], limits: BlockDecodeLimits) -> Result<(), DecodeEr
     skip(&mut bytes, 80)?;
     let transactions = count(&mut bytes, &mut remaining, 10)?;
     for _ in 0..transactions {
-        skip(&mut bytes, 4)?;
-        let first_inputs = compact_size(&mut bytes)?;
-        let witness = first_inputs == 0;
-        let inputs = if witness {
-            let flag = u8::consensus_decode(&mut bytes)?;
-            if flag != 1 {
-                return Err(DecodeError::Encoding(
-                    bitcoin::consensus::encode::Error::UnsupportedSegwitFlag(flag),
-                ));
-            }
-            compact_size(&mut bytes)?
-        } else {
-            first_inputs
-        };
-        charge(inputs, &mut remaining, bytes.len(), 41)?;
-        for _ in 0..inputs {
-            skip(&mut bytes, 36)?;
-            blob(&mut bytes)?;
-            skip(&mut bytes, 4)?;
-        }
-        let outputs = count(&mut bytes, &mut remaining, 9)?;
-        for _ in 0..outputs {
-            skip(&mut bytes, 8)?;
-            blob(&mut bytes)?;
-        }
-        if witness {
-            let mut has_witness = false;
-            for _ in 0..inputs {
-                let items = count(&mut bytes, &mut remaining, 1)?;
-                has_witness |= items != 0;
-                for _ in 0..items {
-                    blob(&mut bytes)?;
-                }
-            }
-            if !has_witness {
-                return Err(DecodeError::SuperfluousWitness);
-            }
-        }
-        skip(&mut bytes, 4)?;
+        preflight_transaction(&mut bytes, &mut remaining)?;
     }
     if !bytes.is_empty() {
         return Err(DecodeError::TrailingBytes);
     }
+    Ok(())
+}
+
+/// Scan one transaction without allocation, shared with raw submission admission.
+pub(crate) fn preflight_transaction(
+    bytes: &mut &[u8],
+    remaining: &mut usize,
+) -> Result<(), DecodeError> {
+    skip(bytes, 4)?;
+    let first_inputs = compact_size(bytes)?;
+    let witness = first_inputs == 0;
+    let inputs = if witness {
+        let flag = u8::consensus_decode(bytes)?;
+        if flag != 1 {
+            return Err(DecodeError::Encoding(
+                bitcoin::consensus::encode::Error::UnsupportedSegwitFlag(flag),
+            ));
+        }
+        compact_size(bytes)?
+    } else {
+        first_inputs
+    };
+    charge(inputs, remaining, bytes.len(), 41)?;
+    for _ in 0..inputs {
+        skip(bytes, 36)?;
+        blob(bytes)?;
+        skip(bytes, 4)?;
+    }
+    let outputs = count(bytes, remaining, 9)?;
+    for _ in 0..outputs {
+        skip(bytes, 8)?;
+        blob(bytes)?;
+    }
+    if witness {
+        let mut has_witness = false;
+        for _ in 0..inputs {
+            let items = count(bytes, remaining, 1)?;
+            has_witness |= items != 0;
+            for _ in 0..items {
+                blob(bytes)?;
+            }
+        }
+        if !has_witness {
+            return Err(DecodeError::SuperfluousWitness);
+        }
+    }
+    skip(bytes, 4)?;
     Ok(())
 }
 

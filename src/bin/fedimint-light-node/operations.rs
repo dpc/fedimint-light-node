@@ -8,6 +8,7 @@ use fedimint_light_node::block_download_config::BlockDownloadConfig;
 use fedimint_light_node::bootstrap::bootstrap;
 use fedimint_light_node::bootstrap_config::BootstrapConfig;
 use fedimint_light_node::header_sync::HeaderSync;
+use fedimint_light_node::transaction_submission_config::TransactionSubmissionConfig;
 use fedimint_light_node::validated_header_store::ValidatedHeaderStore;
 
 use crate::options::{Command, Options};
@@ -51,6 +52,45 @@ pub async fn run(
         }
         Command::Status => {
             output::status(&ValidatedHeaderStore::open_pinned(&options.db, config)?)?;
+        }
+        Command::Broadcast {
+            network,
+            input,
+            retry_seconds,
+            total_seconds,
+        } => {
+            let limits = TransactionSubmissionConfig {
+                total_timeout: Duration::from_secs(total_seconds),
+                visit_timeout: Duration::from_secs(network.timeout_seconds),
+                ..TransactionSubmissionConfig::default()
+            };
+            let transaction = crate::transaction_input::read(&input, limits)?;
+            let store = ValidatedHeaderStore::open_pinned(&options.db, config)?;
+            let mut sync = HeaderSync::new(
+                store,
+                network.sync_config(config.header_capacity.get(), 4, 8_000, retry_seconds),
+            )?;
+            eprintln!(
+                "submission is a local write only; cancellation may follow delivery; explicit retry is allowed"
+            );
+            let report = tokio::select! {
+                biased;
+                result = &mut shutdown => {
+                    result?;
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "submission interrupted; delivery is indeterminate, explicit retry is allowed",
+                    ).into());
+                }
+                result = sync.submit_transaction(&transaction, limits) => result?,
+            };
+            output::submission(&report)?;
+            if report.submitted() == 0 {
+                return Err(
+                    "no completed transaction submission; started writes may still have delivered"
+                        .into(),
+                );
+            }
         }
         Command::Protect { height, hash } => {
             let mut store = ValidatedHeaderStore::open_pinned(&options.db, config)?;

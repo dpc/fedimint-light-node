@@ -6,6 +6,8 @@ use bitcoin::BlockHash;
 use bitcoin::hashes::Hash;
 use fedimint_light_node::block_decode::{BlockDecodeLimits, decode_block};
 use fedimint_light_node::block_integrity::WitnessRules;
+use fedimint_light_node::transaction_decode::decode_transaction;
+use fedimint_light_node::transaction_submission_config::TransactionSubmissionConfig;
 
 thread_local! {
     static ALLOCATIONS: Cell<Option<usize>> = const { Cell::new(None) };
@@ -76,4 +78,20 @@ fn preflight_rejections_allocate_nothing() {
     let mut trailing = fixture.to_vec();
     trailing.push(0);
     assert_no_decode_allocation(&trailing, usize::MAX);
+}
+
+#[test]
+fn raw_transaction_structural_rejections_allocate_nothing() {
+    let mut tx = bitcoin::blockdata::constants::genesis_block(bitcoin::Network::Bitcoin)
+        .txdata
+        .remove(0);
+    tx.input[0].witness = bitcoin::Witness::from_slice(&[b"witness"]);
+    let bytes = bitcoin::consensus::serialize(&tx);
+    for end in 0..bytes.len() {
+        ALLOCATIONS.with(|count| count.set(Some(0)));
+        let result = decode_transaction(&bytes[..end], TransactionSubmissionConfig::default());
+        let allocations = ALLOCATIONS.with(|count| count.replace(None).unwrap());
+        assert!(result.is_err());
+        assert_eq!(allocations, 0);
+    }
 }

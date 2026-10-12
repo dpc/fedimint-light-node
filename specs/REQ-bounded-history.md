@@ -34,6 +34,10 @@ the local tip; neither selected nor advertised height proves a limited peer's ra
 Logical record bounds do not establish
 physical file-size or process-memory guarantees; resource accounting remains
 incomplete.
+Outbound transaction submission shares the exclusive owner, bounds canonical
+serialization and weight before outbound allocation, and caps sequential attempts,
+received/sent wire reservations, handshake messages and absolute deadlines. No
+mempool, persistent retry queue or automatic rebroadcast is implemented.
 
 ## Obligation
 

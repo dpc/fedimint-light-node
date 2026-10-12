@@ -4,6 +4,9 @@
 
 No guardian adapter exists. These obligations describe the requested eventual
 backend, not capabilities of the bootstrap library.
+The library and CLI now support bounded caller-driven transaction submission;
+completed writes do not establish peer acceptance, propagation or confirmation.
+Cancellation can follow delivery; retry remains an explicit caller decision.
 
 ## Authority and scope
 
