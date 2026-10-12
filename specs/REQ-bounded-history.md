@@ -8,8 +8,10 @@ cache budget and bounded record decoding. Storage reports out-of-history
 queries separately from future heights and keeps pinned anchor and identity
 metadata outside the rolling window. Decoded body checks enforce caller byte
 budgets and protocol size/weight limits before allocating scratch trees and sets;
-the caller owns block allocations. It does not yet retain validation context
-or implement networking, bounded wire decoding or global body budgets.
+the caller owns block allocations. Wire admission enforces explicit per-call byte
+and aggregate element budgets with an allocation-free structural pass before
+decoding. It does not yet retain validation context or implement networking or
+global body budgets.
 Logical record bounds do not establish
 physical file-size or process-memory guarantees; resource accounting remains
 incomplete.

@@ -1,7 +1,7 @@
 //! Stateless checks on caller-owned, already decoded blocks.
 //!
-//! This is not a consensus validator or a wire decoder. The caller must bound
-//! decoding, reject noncanonical encodings and trailing bytes, authenticate the
+//! This is not a consensus validator or a wire decoder. Use [`crate::block_decode`]
+//! for bounded canonical wire admission. The caller must authenticate the
 //! requested header, and determine witness activation from trusted chain context.
 //! No scripts, UTXO/spend checks, subsidy, contextual finality, BIP34 height,
 //! signature-operation limits, signet solution, or chain selection are checked.

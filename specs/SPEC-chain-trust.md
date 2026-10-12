@@ -6,8 +6,9 @@ The library checks decoded block structure, output money ranges, requested hash,
 Merkle mutation/duplicates, witness commitments and size/weight limits. Witness
 activation is explicit caller context, not inferred or authenticated. Separate
 declared-target PoW checks enforce target range and a caller-supplied limit, not
-expected difficulty. Bounded canonical wire decoding and body delivery remain
-unimplemented. No full consensus or contextual header validation is provided.
+expected difficulty. Complete payload admission implements bounded canonical wire
+decoding followed by these body checks; body delivery remains unimplemented.
+No full consensus or contextual header validation is provided.
 The header store persists caller-supplied anchors and linked canonical suffixes,
 without authenticating bootstrap sources or selecting branches by work. Missing
 retained ancestry produces a storage recovery error, not a node-wide recovery

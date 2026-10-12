@@ -9,8 +9,9 @@ Atomic suffix updates and pruning preserve coherent bounds across restart.
 The caller supplies all trust decisions and resource capacities; storage checks
 structure, not consensus. Separate stateless functions check decoded block integrity
 and declared-target PoW, using caller-supplied hash, witness activation and target
-limit rather than authenticated chain context. Validation context, bootstrap,
-synchronization, bounded wire decoding, body retrieval and guardian integration
+limit rather than authenticated chain context. Complete payload admission bounds
+wire bytes and decoded structure before allocating and checking bodies.
+Validation context, bootstrap, synchronization, body retrieval and guardian integration
 below remain unimplemented.
 
 ## Boundaries and flow

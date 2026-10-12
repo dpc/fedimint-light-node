@@ -43,9 +43,13 @@ Actual fallback integration into Fedimint remains outside this implementation.
 Body checks borrow an already decoded block. An allocation-free counting sink
 enforces the caller's byte budget (capped at 4 MB) before scratch allocation and
 hashing. Scratch trees and sets scale with accepted transaction/input counts;
-the caller owns existing block allocations. This is not bounded wire decoding:
-canonical decoding, trailing-byte rejection, global download limits and process
-memory accounting remain unimplemented. A body rejection must not poison the
+the caller owns existing block allocations. The `block_decode` entry point first
+scans complete payloads without allocation, enforcing explicit byte and aggregate
+element budgets and rejecting malformed lengths, encodings that are not canonical,
+truncation and trailing bytes. It then uses `rust-bitcoin` decoding and the same
+integrity checks. Structural budgets bound decoded storage growth, not exact
+allocator bytes or RSS. Global download limits and process memory accounting
+remain unimplemented. A body rejection must not poison the
 requested header or prevent retrying a different body.
 
 The mechanical checks deliberately do not execute scripts, consult a UTXO set,
