@@ -7,8 +7,11 @@ The Rust library implements retention-range arithmetic and a synchronous redb
 store with versioned bincode anchor, identity and canonical-header records.
 Atomic suffix updates and pruning preserve coherent bounds across restart.
 The caller supplies all trust decisions and resource capacities; storage checks
-structure, not consensus. Validation context, bootstrap, synchronization, body
-retrieval and guardian integration below remain unimplemented.
+structure, not consensus. Separate stateless functions check decoded block integrity
+and declared-target PoW, using caller-supplied hash, witness activation and target
+limit rather than authenticated chain context. Validation context, bootstrap,
+synchronization, bounded wire decoding, body retrieval and guardian integration
+below remain unimplemented.
 
 ## Boundaries and flow
 

@@ -9,6 +9,13 @@ bounded redb header store with versioned bincode records. Callers supply the
 anchor, chain identity, header capacity and database cache budget. Atomic suffix
 replacement and pruning preserve the pinned identity across restart. Storage
 checks linkage and record consistency, **not Bitcoin header validity or trust**.
+The separate `block_integrity` module checks caller-owned decoded blocks against
+a requested hash, transaction structure and money ranges, Merkle and witness
+commitments, duplicate defenses, serialization size and weight. Callers explicitly
+select pre-activation or active witness rules from trusted context. The separate
+`declared_pow` module checks target range and PoW against the declared target and
+a caller-supplied network limit, **not expected difficulty or header validity**.
+Neither API authenticates the requested hash or establishes consensus acceptance.
 There is no networking, validation pipeline, guardian adapter, or executable.
 The intended boundaries are described in
 [ARCH-fedimint-light-node](specs/ARCH-fedimint-light-node.md).
@@ -30,6 +37,29 @@ schema migration and capacity resizing are not implemented. A retained suffix
 alone does not provide enough context for future consensus checks. Record limits
 and an explicit cache budget are not a measured RSS or physical file-size bound.
 Actual fallback integration into Fedimint remains outside this implementation.
+
+## Integrity boundary
+
+Body checks borrow an already decoded block. An allocation-free counting sink
+enforces the caller's byte budget (capped at 4 MB) before scratch allocation and
+hashing. Scratch trees and sets scale with accepted transaction/input counts;
+the caller owns existing block allocations. This is not bounded wire decoding:
+canonical decoding, trailing-byte rejection, global download limits and process
+memory accounting remain unimplemented. A body rejection must not poison the
+requested header or prevent retrying a different body.
+
+The mechanical checks deliberately do not execute scripts, consult a UTXO set,
+check subsidy/value conservation, contextual transaction validity, signature
+operation limits, coinbase height or signet solutions. Invalid spends and inflation
+can pass. Header linkage, timestamps, expected difficulty, authenticated anchors
+and branch selection are not established by either integrity API.
+
+Check semantics were compared with Bitcoin Core v30.0 `CheckTransaction`,
+`CheckMerkleRoot`, `CheckWitnessMalleation`, `DeriveTarget`, and
+`arith_uint256::SetCompact`, BIP141, and the pinned `rust-bitcoin` source. The API
+does not claim to reproduce all Core validation. In particular it avoids
+the dependency's witness convenience check, which accepts a present commitment with
+an absent reserved value when all witnesses are empty.
 
 ## AI usage disclosure
 
