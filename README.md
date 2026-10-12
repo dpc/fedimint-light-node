@@ -52,6 +52,16 @@ allocator bytes or RSS. Global download limits and process memory accounting
 remain unimplemented. A body rejection must not poison the
 requested header or prevent retrying a different body.
 
+The `v1_block_frame` boundary admits only Bitcoin v1 `block` envelopes. Callers
+collect a fixed 24-byte header, admit its network, command and bounded length,
+then collect exactly the admitted payload length before checksum and block
+decoding. Header admission and checksum checks allocate nothing. All other
+commands are rejected; this is not a peer dispatcher or handshake. There is no
+BIP324 support, and the checksum does not authenticate a peer or block. Callers
+own fragmented reads, EOF handling, deadlines, buffers and concurrent budgets.
+The wire layout and checksum byte order follow Bitcoin Core v30.0
+`CMessageHeader` and `rust-bitcoin` 0.32.102 `RawNetworkMessage`.
+
 The mechanical checks deliberately do not execute scripts, consult a UTXO set,
 check subsidy/value conservation, contextual transaction validity, signature
 operation limits, coinbase height or signet solutions. Invalid spends and inflation

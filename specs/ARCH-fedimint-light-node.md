@@ -11,6 +11,8 @@ structure, not consensus. Separate stateless functions check decoded block integ
 and declared-target PoW, using caller-supplied hash, witness activation and target
 limit rather than authenticated chain context. Complete payload admission bounds
 wire bytes and decoded structure before allocating and checking bodies.
+A bounded v1 block-envelope boundary checks caller network, command, length and
+checksum before that payload admission; it owns no transport or peer lifecycle.
 Validation context, bootstrap, synchronization, body retrieval and guardian integration
 below remain unimplemented.
 

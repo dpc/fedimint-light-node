@@ -8,6 +8,8 @@ activation is explicit caller context, not inferred or authenticated. Separate
 declared-target PoW checks enforce target range and a caller-supplied limit, not
 expected difficulty. Complete payload admission implements bounded canonical wire
 decoding followed by these body checks; body delivery remains unimplemented.
+The v1 block-envelope boundary checks network magic and checksum, neither of
+which authenticates a peer, requested hash or activation context.
 No full consensus or contextual header validation is provided.
 The header store persists caller-supplied anchors and linked canonical suffixes,
 without authenticating bootstrap sources or selecting branches by work. Missing
