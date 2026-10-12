@@ -280,7 +280,7 @@ fn reject_incompatible_corrupt_trailing_and_oversized_metadata_without_reset() {
         let config = config(3);
         drop(HeaderStore::create(&path, config, anchor, initial).unwrap());
         mutate_metadata(&path, |bytes| match mutation {
-            0 => bytes[8..12].copy_from_slice(&2u32.to_le_bytes()),
+            0 => bytes[8..12].copy_from_slice(&1u32.to_le_bytes()),
             1 => bytes[0] ^= 1,
             2 => bytes.truncate(15),
             3 => bytes.push(0),
@@ -290,7 +290,7 @@ fn reject_incompatible_corrupt_trailing_and_oversized_metadata_without_reset() {
         for _ in 0..2 {
             let error = HeaderStore::open(&path, config, anchor).err().unwrap();
             if mutation == 0 {
-                assert!(matches!(error, StoreError::UnsupportedSchema(2)));
+                assert!(matches!(error, StoreError::UnsupportedSchema(1)));
             } else {
                 assert!(matches!(error, StoreError::Corrupt(_)), "{error}");
             }
@@ -327,7 +327,7 @@ fn reject_missing_extra_and_inconsistent_header_records() {
                         table.insert(102, bytes.as_slice()).unwrap();
                     }
                     3 => {
-                        bytes[0..4].copy_from_slice(&2u32.to_le_bytes());
+                        bytes[0..4].copy_from_slice(&1u32.to_le_bytes());
                         table.insert(102, bytes.as_slice()).unwrap();
                     }
                     4 => {
@@ -412,7 +412,7 @@ fn reject_impossible_bounds_and_unexpected_tables() {
 }
 
 #[test]
-fn schema_v1_bytes_do_not_depend_on_rust_bitcoin_serde_layout() {
+fn schema_v2_bytes_do_not_depend_on_rust_bitcoin_serde_layout() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("headers.redb");
     let (anchor, initial) = anchor(100);
@@ -421,7 +421,7 @@ fn schema_v1_bytes_do_not_depend_on_rust_bitcoin_serde_layout() {
     let read = db.begin_read().unwrap();
     let mut metadata = Vec::new();
     metadata.extend_from_slice(b"FLNSTORE");
-    metadata.extend_from_slice(&1u32.to_le_bytes());
+    metadata.extend_from_slice(&2u32.to_le_bytes());
     metadata.extend_from_slice(&anchor.network.magic().to_bytes());
     metadata.extend_from_slice(anchor.height_one_hash.as_byte_array());
     metadata.extend_from_slice(&100u64.to_le_bytes());
@@ -430,7 +430,9 @@ fn schema_v1_bytes_do_not_depend_on_rust_bitcoin_serde_layout() {
     metadata.extend_from_slice(&100u64.to_le_bytes());
     metadata.extend_from_slice(&100u64.to_le_bytes());
     metadata.extend_from_slice(anchor.hash.as_byte_array());
-    assert_eq!(metadata.len(), 144);
+    metadata.push(0); // Raw storage, not contextual admission.
+    metadata.extend_from_slice(&100u64.to_le_bytes()); // Initial protection floor.
+    assert_eq!(metadata.len(), 153);
     assert_eq!(
         read.open_table(META)
             .unwrap()
@@ -440,7 +442,7 @@ fn schema_v1_bytes_do_not_depend_on_rust_bitcoin_serde_layout() {
             .value(),
         metadata.as_slice()
     );
-    let mut header = 1u32.to_le_bytes().to_vec();
+    let mut header = 2u32.to_le_bytes().to_vec();
     header.extend_from_slice(&bitcoin::consensus::serialize(&initial));
     assert_eq!(header.len(), 84);
     assert_eq!(

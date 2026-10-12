@@ -9,3 +9,32 @@ Its SHA-256 is
 `469b9daa241d3dafe495d2e63ccc553b3b465c0ea20f7150e7dfe7f20269bed5`.
 This public block data provides an independent witness-commitment vector,
 rather than generating every successful commitment with the checked dependency.
+
+## Mainnet headers
+
+`mainnet-headers-0-2035.raw` contains the 2,036 consecutive 80-byte Bitcoin mainnet
+headers from heights 0 through 2,035 (162,880 bytes). Retrieved from the public
+`electrum.blockstream.info:50002` node using `blockchain.block.headers` at heights
+0 and 2,016. This is public ledger data, not a source of production trust.
+Tests check linkage, PoW and contextual difficulty from genesis through the first
+retarget, and exercise bootstrap and restart with bounded timestamp context.
+The fixture includes a full difficulty period because an anchor immediately
+before a retarget requires its authenticated period-start header.
+Its SHA-256 is
+`f5865ced1b5f13290d029e49f69f9ca57ec89eca71376c85e1a056e564d3f081`.
+
+## Divergent header branches
+
+`mainnet-headers-477792-478562.raw` contains mainnet heights 477,792 through
+478,562 from `electrum.blockstream.info:50002`. `bch-headers-478559-478562.raw`
+contains the first four Bitcoin Cash fork headers from
+`bch.imaginary.cash:50002`. Both use `blockchain.block.headers`. They share the
+mainnet parent at height 478,558, and these initial fork headers still satisfy
+mainnet header difficulty rules. They provide actual divergent mined branches
+for testing work selection, suffix replacement, pruning and protection, without
+a test-only PoW bypass. Their acceptance is **not** Bitcoin Cash network support
+or validation of their block bodies: a header-only checker cannot distinguish
+consensus-invalid bodies merely from valid linkage, work and timestamps.
+Their SHA-256 values, in the same order, are
+`23c2cc5f0feed363a28906c3555378956d4710e5d7ada07a7e6fb6733271be86`
+and `419278117f953998d807df78055ffb7072905f012013f242f69578c6e7bb33f3`.

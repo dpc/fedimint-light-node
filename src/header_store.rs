@@ -5,11 +5,12 @@ use bitcoin::block::Header;
 use bitcoin::hashes::Hash;
 use redb::{Database, ReadableDatabase, ReadableTable, ReadableTableMetadata};
 
+use crate::header_context::HeaderContext;
 use crate::retained_range::RetainedRange;
 use crate::store_anchor::StoreAnchor;
 use crate::store_config::StoreConfig;
 use crate::store_error::StoreError;
-use crate::store_format::{HEADERS, META, Metadata, decode_header, encode_header};
+use crate::store_format::{CONTEXTS, HEADERS, META, Metadata, decode_header, encode_header};
 
 /// Synchronous, bounded canonical-header persistence for an embedding caller.
 ///
@@ -18,9 +19,10 @@ use crate::store_format::{HEADERS, META, Metadata, decode_header, encode_header}
 /// here detect inconsistent updates, not invalid PoW, difficulty, time, or work.
 ///
 /// This slice starts at the anchor and supports forward updates and retained
-/// suffix replacement only. It does not backfill, retain validation context, or
-/// promise that retained ancestry suffices for consensus checks. Future bounded
-/// context must live separately; pruning here touches only canonical headers.
+/// suffix replacement only. The raw API does not backfill, retain validation
+/// context, or promise that retained ancestry suffices for consensus checks.
+/// Use `ValidatedHeaderStore` for contextual admission and separately stored
+/// checkpoints. Raw and validated stores cannot open each other's mode.
 ///
 /// Each update is one immediately durable redb transaction. There are no exposed
 /// transactions or background tasks. Drop releases the database; embedding callers
@@ -35,6 +37,8 @@ pub struct HeaderStore {
     config: StoreConfig,
     /// Immutable expected identity, never reconstructed from untrusted peers.
     anchor: StoreAnchor,
+    /// Validated mode is inaccessible through public raw-store constructors.
+    validated: bool,
 }
 
 impl HeaderStore {
@@ -47,6 +51,16 @@ impl HeaderStore {
         config: StoreConfig,
         anchor: StoreAnchor,
         header: Header,
+    ) -> Result<Self, StoreError> {
+        Self::create_inner(path.as_ref(), config, anchor, header, None)
+    }
+
+    pub(crate) fn create_inner(
+        path: &Path,
+        config: StoreConfig,
+        anchor: StoreAnchor,
+        header: Header,
+        context: Option<&HeaderContext>,
     ) -> Result<Self, StoreError> {
         if header.block_hash() != anchor.hash {
             return Err(StoreError::InvalidUpdate("anchor header hash mismatch"));
@@ -67,12 +81,13 @@ impl HeaderStore {
         {
             let mut metadata = write.open_table(META)?;
             let mut headers = write.open_table(HEADERS)?;
-            metadata.insert(
-                0,
-                Metadata::new(anchor, config.header_capacity.get())
-                    .encode()
-                    .as_slice(),
-            )?;
+            let mut contexts = write.open_table(CONTEXTS)?;
+            let mut record = Metadata::new(anchor, config.header_capacity.get());
+            record.validated = context.is_some();
+            if let Some(context) = context {
+                contexts.insert(anchor.height, context.encode().as_slice())?;
+            }
+            metadata.insert(0, record.encode().as_slice())?;
             headers.insert(anchor.height, encode_header(&header).as_slice())?;
         }
         write.commit()?;
@@ -80,6 +95,7 @@ impl HeaderStore {
             database,
             config,
             anchor,
+            validated: context.is_some(),
         })
     }
 
@@ -95,6 +111,15 @@ impl HeaderStore {
         config: StoreConfig,
         anchor: StoreAnchor,
     ) -> Result<Self, StoreError> {
+        Self::open_inner(path.as_ref(), config, anchor, false)
+    }
+
+    pub(crate) fn open_inner(
+        path: &Path,
+        config: StoreConfig,
+        anchor: StoreAnchor,
+        validated: bool,
+    ) -> Result<Self, StoreError> {
         let database = Database::builder()
             .set_cache_size(config.cache_bytes.get())
             .open(path)?;
@@ -102,6 +127,7 @@ impl HeaderStore {
             database,
             config,
             anchor,
+            validated,
         };
         store.check_consistency()?;
         Ok(store)
@@ -150,6 +176,25 @@ impl HeaderStore {
         parent: u64,
         replacement: &[Header],
     ) -> Result<(), StoreError> {
+        if self.validated {
+            return Err(StoreError::InvalidUpdate(
+                "validated store requires contextual admission",
+            ));
+        }
+        self.replace_inner(parent, replacement, None)
+    }
+
+    pub(crate) fn replace_inner(
+        &mut self,
+        parent: u64,
+        replacement: &[Header],
+        contexts: Option<&[HeaderContext]>,
+    ) -> Result<(), StoreError> {
+        if contexts.is_some() != self.validated
+            || contexts.is_some_and(|contexts| contexts.len() != replacement.len())
+        {
+            return Err(StoreError::InvalidUpdate("validation mode mismatch"));
+        }
         let count = u64::try_from(replacement.len())
             .map_err(|_| StoreError::InvalidUpdate("batch length overflow"))?;
         if count > self.config.header_capacity.get() {
@@ -166,7 +211,11 @@ impl HeaderStore {
             if parent < metadata.first || metadata.tip < parent {
                 return Err(StoreError::RecoveryRequired);
             }
+            if self.validated && parent < metadata.protected {
+                return Err(StoreError::RecoveryRequired);
+            }
             let mut headers = write.open_table(HEADERS)?;
+            let mut context_table = write.open_table(CONTEXTS)?;
             let mut previous = read_header(&headers, parent)?.block_hash();
             // Write as we check: a late linkage error drops the transaction,
             // rolling back even already-inserted replacement headers.
@@ -179,18 +228,64 @@ impl HeaderStore {
                     return Err(StoreError::InvalidUpdate("height-one identity mismatch"));
                 }
                 headers.insert(height, encode_header(header).as_slice())?;
+                if let Some(contexts) = contexts {
+                    context_table.insert(height, contexts[offset].encode().as_slice())?;
+                }
                 previous = header.block_hash();
             }
             let first = metadata
                 .first
                 .max(RetainedRange::new(tip, self.config.header_capacity).first());
-            // Delete only rows outside the new canonical interval, not other
-            // tables that might eventually hold separately bounded context.
+            // Keep each retained header and its checkpoint together; neither
+            // pruning nor replacement changes pinned identity or protection.
             headers.retain(|height, _| first <= height && height <= tip)?;
+            context_table.retain(|height, _| first <= height && height <= tip)?;
             metadata.first = first;
             metadata.tip = tip;
             metadata.tip_hash = previous.to_byte_array();
             metadata_table.insert(0, metadata.encode().as_slice())?;
+        }
+        write.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn context(&self, height: u64) -> Result<HeaderContext, StoreError> {
+        let read = self.database.begin_read()?;
+        let table = read.open_table(CONTEXTS)?;
+        let bytes = table.get(height)?.ok_or(StoreError::RecoveryRequired)?;
+        HeaderContext::decode(bytes.value(), self.anchor)
+    }
+
+    pub(crate) fn capacity(&self) -> u64 {
+        self.config.header_capacity.get()
+    }
+
+    pub(crate) fn protected(&self) -> Result<u64, StoreError> {
+        let read = self.database.begin_read()?;
+        Ok(read_metadata(&read.open_table(META)?)?.protected)
+    }
+
+    pub(crate) fn protect(
+        &mut self,
+        height: u64,
+        hash: bitcoin::BlockHash,
+    ) -> Result<(), StoreError> {
+        let mut write = self.database.begin_write()?;
+        write.set_durability(redb::Durability::Immediate)?;
+        {
+            let mut table = write.open_table(META)?;
+            let mut metadata = read_metadata(&table)?;
+            if !self.validated || height < metadata.protected || height > metadata.tip {
+                return Err(StoreError::InvalidUpdate("invalid protection height"));
+            }
+            if height < metadata.first {
+                return Err(StoreError::OutsideRetainedHistory);
+            }
+            if read_header(&write.open_table(HEADERS)?, height)?.block_hash() != hash {
+                return Err(StoreError::InvalidUpdate("protection hash mismatch"));
+            }
+            metadata.protected = height;
+            table.insert(0, metadata.encode().as_slice())?;
         }
         write.commit()?;
         Ok(())
@@ -204,13 +299,18 @@ impl HeaderStore {
             return Err(StoreError::Corrupt("unexpected metadata records"));
         }
         let metadata = read_metadata(&metadata_table)?;
-        // Schema v1 owns exactly these two tables. Future validation context
-        // needs a versioned extension, not silent interpretation by old code.
-        if read.list_tables()?.count() != 2 || read.list_multimap_tables()?.next().is_some() {
+        // Raw and validated modes share v2 but cannot open each other's stores.
+        if read.list_tables()?.count() != 3 || read.list_multimap_tables()?.next().is_some() {
             return Err(StoreError::Corrupt("unexpected tables"));
         }
         if !metadata.matches(self.anchor, self.config.header_capacity.get()) {
             return Err(StoreError::ConfigurationMismatch);
+        }
+        if metadata.validated != self.validated {
+            return Err(StoreError::ConfigurationMismatch);
+        }
+        if metadata.protected < self.anchor.height || metadata.protected > metadata.tip {
+            return Err(StoreError::Corrupt("invalid protected height"));
         }
         if metadata.first < metadata.anchor_height || metadata.tip < metadata.first {
             return Err(StoreError::Corrupt("invalid height bounds"));
@@ -221,11 +321,16 @@ impl HeaderStore {
             .and_then(|span| span.checked_add(1))
             .ok_or(StoreError::Corrupt("height span overflow"))?;
         let headers = read.open_table(HEADERS)?;
+        let contexts = read.open_table(CONTEXTS)?;
+        if contexts.len()? != if self.validated { count } else { 0 } {
+            return Err(StoreError::Corrupt("invalid context count"));
+        }
         if count > metadata.capacity || headers.len()? != count {
             return Err(StoreError::Corrupt("invalid retained header count"));
         }
         let mut previous = None;
         let mut last_hash = None;
+        let mut previous_context: Option<HeaderContext> = None;
         for (offset, entry) in headers.iter()?.enumerate() {
             let (height, bytes) = entry?;
             let height = height.value();
@@ -234,6 +339,26 @@ impl HeaderStore {
             }
             let header = decode_header(bytes.value())?;
             let hash = header.block_hash();
+            if self.validated {
+                let bytes = contexts
+                    .get(height)?
+                    .ok_or(StoreError::Corrupt("missing context"))?;
+                let context = HeaderContext::decode(bytes.value(), self.anchor)?;
+                if context.height() != height || context.tip() != header {
+                    return Err(StoreError::Corrupt("context header mismatch"));
+                }
+                if let Some(previous) = previous_context {
+                    // Historical future-time checks used the original clock.
+                    // Recompute all durable rules without imposing today's clock.
+                    let expected = previous
+                        .validate_next(header, u64::MAX)
+                        .map_err(|_| StoreError::Corrupt("invalid contextual successor"))?;
+                    if expected.encode() != context.encode() {
+                        return Err(StoreError::Corrupt("context transition mismatch"));
+                    }
+                }
+                previous_context = Some(context);
+            }
             if previous.is_some_and(|previous| header.prev_blockhash != previous) {
                 return Err(StoreError::Corrupt("broken header linkage"));
             }

@@ -1,4 +1,4 @@
-//! Private schema v1: fixed-size bincode records, little-endian fixed integers.
+//! Private schema v2: fixed-size bincode records, little-endian fixed integers.
 //!
 //! Bitcoin headers use their consensus 80-byte representation inside the record,
 //! not a Rust struct's serde layout. Changes to these layouts require a schema
@@ -14,7 +14,8 @@ use crate::store_error::StoreError;
 
 pub(crate) const META: TableDefinition<u8, &[u8]> = TableDefinition::new("metadata");
 pub(crate) const HEADERS: TableDefinition<u64, &[u8]> = TableDefinition::new("headers");
-const VERSION: u32 = 1;
+pub(crate) const CONTEXTS: TableDefinition<u64, &[u8]> = TableDefinition::new("contexts");
+const VERSION: u32 = 2;
 const MAGIC: [u8; 8] = *b"FLNSTORE";
 const MAX_RECORD_BYTES: usize = 256;
 
@@ -41,6 +42,10 @@ pub(crate) struct Metadata {
     pub(crate) tip: u64,
     /// Current selected tip hash, checked against the header table on open.
     pub(crate) tip_hash: [u8; 32],
+    /// Whether writes require contextual validation, immutable after creation.
+    pub(crate) validated: bool,
+    /// Monotonic caller-protected height; never roll back through this height.
+    pub(crate) protected: u64,
 }
 
 impl Metadata {
@@ -57,6 +62,8 @@ impl Metadata {
             first: anchor.height,
             tip: anchor.height,
             tip_hash: anchor.hash.to_byte_array(),
+            validated: false,
+            protected: anchor.height,
         }
     }
 
@@ -69,7 +76,7 @@ impl Metadata {
             && self.capacity == capacity
     }
 
-    /// Encode the fixed-size application metadata under schema v1.
+    /// Encode the fixed-size application metadata under schema v2.
     pub(crate) fn encode(&self) -> Vec<u8> {
         // Fixed arrays and integers encoded into a Vec cannot fail.
         bincode::encode_to_vec(self, codec()).expect("fixed-size metadata encoding")

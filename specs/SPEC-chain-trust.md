@@ -10,11 +10,17 @@ expected difficulty. Complete payload admission implements bounded canonical wir
 decoding followed by these body checks; body delivery remains unimplemented.
 The v1 block-envelope boundary checks network magic and checksum, neither of
 which authenticates a peer, requested hash or activation context.
-No full consensus or contextual header validation is provided.
-The header store persists caller-supplied anchors and linked canonical suffixes,
-without authenticating bootstrap sources or selecting branches by work. Missing
-retained ancestry produces a storage recovery error, not a node-wide recovery
-state. The remaining contract describes the requested end state.
+No full consensus validation is provided. Mainnet contextual header validation
+checks linkage, expected target, PoW, timestamps and buried version floors.
+Historical context is hash-linked into a caller-trusted anchor, not freshly
+validated; cumulative work counts only descendants above that common origin.
+The validated store atomically selects strictly higher-work bounded suffixes,
+retains validation checkpoints through pruning, and persists an explicit caller
+protection floor. Other networks are unsupported. Raw storage remains untrusted
+and cannot open validated state. Unsupported forks or protected-history conflicts
+produce explicit recovery errors, not a node-wide recovery state; embedding callers
+must stop affected service. Bootstrap source authentication, automatic chain-change
+notifications and body delivery remain unimplemented.
 
 ## Record justification
 

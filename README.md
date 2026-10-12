@@ -15,8 +15,10 @@ commitments, duplicate defenses, serialization size and weight. Callers explicit
 select pre-activation or active witness rules from trusted context. The separate
 `declared_pow` module checks target range and PoW against the declared target and
 a caller-supplied network limit, **not expected difficulty or header validity**.
-Neither API authenticates the requested hash or establishes consensus acceptance.
-There is no networking, validation pipeline, guardian adapter, or executable.
+Neither integrity API authenticates the requested hash or establishes consensus acceptance.
+The separate `HeaderContext` and `ValidatedHeaderStore` APIs implement contextual
+mainnet header validation and bounded canonical selection as described below.
+There is no networking, complete validation pipeline, guardian adapter, or executable.
 The intended boundaries are described in
 [ARCH-fedimint-light-node](specs/ARCH-fedimint-light-node.md).
 
@@ -29,14 +31,48 @@ formatting, prose, lockfile freshness, builds, and Clippy.
 
 ## Unsettled integration choices
 
-Supported networks, bootstrap quorum and confirmation margin, fee policy,
+Networks beyond mainnet, bootstrap quorum and confirmation margin, fee policy,
 and a Fedimint Rust adapter versus a small RPC transport remain undecided.
 No resource capacities or production defaults have been chosen. The store starts
-at a caller-supplied anchor; backfill, separately bounded validation context,
-schema migration and capacity resizing are not implemented. A retained suffix
-alone does not provide enough context for future consensus checks. Record limits
+at a caller-supplied anchor; queryable backfill, schema migration and capacity
+resizing are not implemented. The validated store retains bounded context separately
+from queryable headers. Record limits
 and an explicit cache budget are not a measured RSS or physical file-size bound.
 Actual fallback integration into Fedimint remains outside this implementation.
+
+## Contextual mainnet headers
+
+`HeaderContext::from_trusted_history` takes an explicitly trusted anchor plus the
+exact bounded historical range returned by `context_start`. Hash linkage into the
+anchor authenticates that history; it is not freshly validated, and its work is
+not counted. Descendants must link, use the expected compact target (including
+mainnet retargets), satisfy PoW, exceed median time past, stay within two hours of
+an injected local clock, and satisfy buried header-version floors. Non-mainnet
+networks return an explicit unsupported error. These checks do not validate spends,
+scripts, transactions, bootstrap source agreement, or the freshness of the chain.
+
+`ValidatedHeaderStore` persists relative work above the anchor and a fixed-size
+timestamp/retarget checkpoint for each retained header. Even a capacity of one
+can advance through a retarget after restart. A candidate may start at a retained
+parent and replace the suffix only with strictly greater work; ties keep the
+selected chain. Candidate batches and checkpoints are bounded by header capacity.
+There is no orphan pool, persistent fork cache or archival recovery.
+
+Call `protect_through(height, hash)` before promising a selected header as finalized
+to a consumer. The monotonic protection floor survives pruning and restart; it is
+not inferred from confirmation counts. Forks crossing that floor, the anchor, or
+available context return `RecoveryRequired` without altering state. The embedding
+caller must stop affected service and coordinate explicit recovery. Supported chain
+changes are explicit `select_suffix` calls, not background notifications.
+
+Schema v2 commits headers, work, checkpoints and pruning atomically. Raw and
+validated stores cannot open each other's mode; raw storage cannot promote
+unvalidated rows or bypass admission. Schema v1 is rejected, not silently migrated.
+Restart checks bounded records and retained context transitions, but does not
+authenticate a database against malicious replacement. Check semantics follow
+Bitcoin Core v30.0 `GetNextWorkRequired`, `ContextualCheckBlockHeader`,
+`GetMedianTimePast`, and mainnet chain parameters, with `rust-bitcoin` 0.32.102
+compact-target arithmetic. This is header-level checking, not full consensus.
 
 ## Integrity boundary
 

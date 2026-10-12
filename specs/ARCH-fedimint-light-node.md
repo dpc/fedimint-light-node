@@ -13,8 +13,12 @@ limit rather than authenticated chain context. Complete payload admission bounds
 wire bytes and decoded structure before allocating and checking bodies.
 A bounded v1 block-envelope boundary checks caller network, command, length and
 checksum before that payload admission; it owns no transport or peer lifecycle.
-Validation context, bootstrap, synchronization, body retrieval and guardian integration
-below remain unimplemented.
+A separate mainnet validator and validated-store boundary admit descendants and
+select bounded suffixes by relative work. Fixed-size context per retained header
+survives pruning and restart; an explicit caller protection floor prevents rollback
+through consumed history. Raw storage remains untrusted and cannot open validated
+stores. Bootstrap, synchronization, body retrieval and guardian integration below
+remain unimplemented.
 
 ## Boundaries and flow
 

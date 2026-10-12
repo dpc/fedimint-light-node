@@ -12,8 +12,10 @@ the caller owns block allocations. Wire admission enforces explicit per-call byt
 and aggregate element budgets with an allocation-free structural pass before
 decoding. Fixed-size v1 block-header admission bounds declared payload bytes
 before caller buffering; transport buffers and concurrency remain caller-owned.
-It does not yet retain validation context or implement networking or
-global body budgets.
+Validated mainnet storage keeps one fixed-size validation checkpoint per retained
+header, including retarget and median-time context, plus a pinned protection floor.
+Candidate suffixes are bounded by header capacity; no alternative branch pool exists.
+Networking and global body budgets remain unimplemented.
 Logical record bounds do not establish
 physical file-size or process-memory guarantees; resource accounting remains
 incomplete.
