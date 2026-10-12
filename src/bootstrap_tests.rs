@@ -167,6 +167,7 @@ fn config(
     capacity: u64,
 ) -> BootstrapConfig {
     BootstrapConfig {
+        peer_pool: crate::peer_pool_config::PeerPoolConfig::manual_only(),
         sources,
         peers: vec![peer],
         store: StoreConfig {
@@ -180,7 +181,7 @@ fn config(
 }
 
 #[tokio::test]
-async fn common_height_history_offline_reopen_then_sync_across_retarget() {
+async fn discovered_peer_bootstrap_without_manual_addresses_then_reopen_and_retarget() {
     let (a, ah) = source(2021, Fault::None).await;
     let (b, bh) = source(2025, Fault::None).await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -218,7 +219,11 @@ async fn common_height_history_offline_reopen_then_sync_across_retarget() {
         ));
         send(&mut stream, NetworkMessage::Headers(Vec::new())).await;
     });
-    let config = config(vec![a, b], peer, 10);
+    let mut config = config(vec![a, b], peer, 10);
+    config.peers.clear();
+    config.peer_pool.discovery = true;
+    config.peer_pool.dns_seeds.clear();
+    config.peer_pool.discovered_for_test = vec![peer];
     let store_config = config.store;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("chain");
@@ -244,6 +249,7 @@ async fn common_height_history_offline_reopen_then_sync_across_retarget() {
     let mut sync = HeaderSync::new(
         store,
         SyncConfig {
+            peer_pool: crate::peer_pool_config::PeerPoolConfig::manual_only(),
             peers: vec![peer],
             handshake_timeout: Duration::from_secs(2),
             request_timeout: Duration::from_secs(2),

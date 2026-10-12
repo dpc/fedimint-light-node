@@ -312,6 +312,7 @@ dependencies = [
  "bincode",
  "bitcoin",
  "clap",
+ "rand",
  "redb",
  "reqwest",
  "tempfile",

@@ -20,6 +20,8 @@ pub(crate) const MAX_HEADERS: usize = 2000;
 
 /// A narrowly admitted frame; auxiliary commands never allocate a payload.
 pub(crate) enum Message {
+    /// At most 32 sampled public serving endpoints from a checked legacy address frame.
+    Addresses(Vec<std::net::SocketAddr>),
     /// Structurally bounded peer version.
     Version(VersionMessage),
     /// Peer handshake completion.
@@ -118,6 +120,9 @@ pub(crate) async fn receive_inner(
         return Err(SyncError::Protocol("frame or exchange byte budget"));
     }
     *remaining_bytes -= len;
+    if command == b"addr\0\0\0\0\0\0\0\0" {
+        return crate::peer_addr_wire::receive_addresses(stream, len, &envelope[20..24]).await;
+    }
     let mut engine = sha256d::Hash::engine();
     let payload = if buffered {
         let mut payload = vec![0; len];

@@ -8,8 +8,8 @@ use tokio::time::timeout;
 use crate::bootstrap_config::BootstrapConfig;
 use crate::bootstrap_error::BootstrapError;
 use crate::header_error::HeaderError;
-use crate::header_wire::{Message, receive, send};
-use crate::peer_handshake::handshake;
+use crate::header_wire::{Message, send};
+use crate::peer_pool::PeerPool;
 use crate::store_anchor::StoreAnchor;
 use crate::sync_error::SyncError;
 
@@ -23,26 +23,36 @@ pub(crate) async fn history(
     let count = usize::try_from(anchor.height - start + 1)
         .map_err(|_| BootstrapError::Limit("history length"))?;
     let mut remaining_bytes = config.max_peer_bytes;
+    let mut sent = usize::MAX;
     let mut remaining_requests = config.max_header_requests;
     let mut last_error = BootstrapError::Reply("no history peer");
-    for peer in &config.peers {
+    let mut pool = PeerPool::new(&config.peers, config.peer_pool.clone())?;
+    for _ in 0..pool.attempt_limit() {
         let mut headers = Vec::with_capacity(count);
         headers.push(seed);
         let attempt = async {
             if count > 1 {
-                let (mut stream, _) = timeout(
+                let mut stream = timeout(
                     config.request_timeout,
-                    handshake(*peer, 0, &mut remaining_bytes),
+                    pool.acquire(
+                        0,
+                        std::time::Duration::from_secs(1).min(config.request_timeout / 10),
+                        config.request_timeout,
+                        &mut remaining_bytes,
+                        &mut sent,
+                        true,
+                    ),
                 )
                 .await
-                .map_err(|_| BootstrapError::Timeout)??;
+                .map_err(|_| BootstrapError::Timeout)?
+                .map_err(|(_, error)| error)?;
                 while headers.len() < count {
                     remaining_requests = remaining_requests
                         .checked_sub(1)
                         .ok_or(BootstrapError::Limit("header requests"))?;
                     let batch = timeout(config.request_timeout, async {
                         send(
-                            &mut stream,
+                            &mut stream.stream,
                             NetworkMessage::GetHeaders(GetHeadersMessage::new(
                                 vec![headers.last().expect("seed").block_hash()],
                                 anchor.hash,
@@ -50,10 +60,10 @@ pub(crate) async fn history(
                         )
                         .await?;
                         for _ in 0..32 {
-                            match receive(&mut stream, &mut remaining_bytes).await? {
+                            match stream.receive(&mut remaining_bytes, None).await? {
                                 Message::Headers(batch) => return Ok(batch),
                                 Message::Ping(nonce) => {
-                                    send(&mut stream, NetworkMessage::Pong(nonce)).await?
+                                    send(&mut stream.stream, NetworkMessage::Pong(nonce)).await?
                                 }
                                 Message::Ignore | Message::Pong(_) => {}
                                 _ => {
@@ -77,6 +87,9 @@ pub(crate) async fn history(
                         headers.push(header);
                     }
                 }
+                if headers.last().expect("seed").block_hash() == anchor.hash {
+                    pool.release(stream, true);
+                }
             }
             if headers.last().expect("seed").block_hash() != anchor.hash {
                 return Err(HeaderError::Linkage.into());
@@ -85,12 +98,16 @@ pub(crate) async fn history(
         }
         .await;
         match attempt {
-            Ok(()) => return Ok(headers),
+            Ok(()) => {
+                pool.shutdown().await;
+                return Ok(headers);
+            }
             Err(error) => last_error = error,
         }
         if remaining_requests == 0 || remaining_bytes < 24 {
             break;
         }
     }
+    pool.shutdown().await;
     Err(last_error)
 }

@@ -1,15 +1,17 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-/// Explicit budgets for a sequential, outbound-only mainnet synchronizer.
+/// Explicit budgets for a single-foreground, outbound-only mainnet synchronizer.
 ///
-/// There is exactly one active socket, request and candidate globally per service,
-/// no task/message queues, and no persistent alternative branches. Hard ceilings
+/// There is exactly one foreground request and candidate globally per service,
+/// bounded idle drivers, and no persistent alternative branches. Hard ceilings
 /// bound misconfiguration too; these are implementation limits, not production defaults.
 #[derive(Debug, Clone)]
 pub struct SyncConfig {
-    /// One to sixteen caller-resolved addresses, visited in order.
+    /// Up to sixteen explicit numeric addresses; empty is valid with discovery enabled.
     pub peers: Vec<SocketAddr>,
+    /// Discovery, stable/exploratory sockets and optional successful-peer cache.
+    pub peer_pool: crate::peer_pool_config::PeerPoolConfig,
     /// Whole connect plus version/verack exchange deadline (at most one minute).
     pub handshake_timeout: Duration,
     /// Whole getheaders exchange deadline, including chatter (at most one minute).
@@ -25,7 +27,9 @@ pub struct SyncConfig {
 impl SyncConfig {
     /// Reject zero, excessive, or inconsistent budgets before any network activity.
     pub(crate) fn validate(&self, capacity: u64) -> bool {
-        (1..=16).contains(&self.peers.len())
+        self.peers.len() <= 16
+            && (self.peer_pool.discovery || !self.peers.is_empty())
+            && self.peer_pool.valid()
             && (1..=16).contains(&self.requests_per_visit)
             && (1..=32_000).contains(&self.candidate_headers)
             && self.candidate_headers as u64 <= capacity

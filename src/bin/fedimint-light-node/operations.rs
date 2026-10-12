@@ -21,6 +21,9 @@ pub async fn run(
 ) -> Result<()> {
     let config = options.store_config();
     let fee_policy = options.fee_policy();
+    let mut peer_cache = options.db.as_os_str().to_os_string();
+    peer_cache.push(".peers");
+    let peer_cache = std::path::PathBuf::from(peer_cache);
     output::fee_policy(fee_policy)?;
     match options.command {
         Command::Bootstrap {
@@ -31,6 +34,11 @@ pub async fn run(
             total_seconds,
         } => {
             let mut config = BootstrapConfig {
+                peer_pool: {
+                    let mut pool = network.pool_config();
+                    pool.cache = Some(peer_cache.clone());
+                    pool
+                },
                 store: config,
                 peers: network.peer,
                 quorum: quorum as usize,
@@ -70,7 +78,13 @@ pub async fn run(
             let store = ValidatedHeaderStore::open_pinned(&options.db, config)?;
             let mut sync = HeaderSync::new(
                 store,
-                network.sync_config(config.header_capacity.get(), 4, 8_000, retry_seconds),
+                network.sync_config(
+                    config.header_capacity.get(),
+                    4,
+                    8_000,
+                    retry_seconds,
+                    peer_cache.clone(),
+                ),
             )?
             .with_fee_policy(fee_policy);
             eprintln!(
@@ -80,6 +94,7 @@ pub async fn run(
                 biased;
                 result = &mut shutdown => {
                     result?;
+                    sync.shutdown().await;
                     return Err(io::Error::new(
                         io::ErrorKind::Interrupted,
                         "submission interrupted; delivery is indeterminate, explicit retry is allowed",
@@ -87,6 +102,7 @@ pub async fn run(
                 }
                 result = sync.submit_transaction(&transaction, limits) => result?,
             };
+            sync.shutdown().await;
             output::submission(&report)?;
             if report.submitted() == 0 {
                 return Err(
@@ -115,6 +131,7 @@ pub async fn run(
                     requests,
                     candidate_headers,
                     retry_seconds,
+                    peer_cache.clone(),
                 ),
             )?
             .with_fee_policy(fee_policy);
@@ -123,6 +140,7 @@ pub async fn run(
                     biased;
                     result = &mut shutdown => {
                         result?;
+                        sync.shutdown().await;
                         output::status(sync.store())?;
                         return Err(interrupted());
                     }
@@ -130,20 +148,26 @@ pub async fn run(
                 };
                 let status = sync.status()?;
                 eprintln!(
-                    "peer={} selected_height={} selected_hash={} generation={} stopped={}",
+                    "peer={:?} selected_height={} selected_hash={} generation={} stopped={}",
                     report.peer, status.height, status.hash, status.generation, status.stopped,
+                );
+                let (connections, candidates, cache_failed) = sync.peer_counts();
+                eprintln!(
+                    "connections={connections} candidates={candidates} peer_cache_write_failed={cache_failed}"
                 );
                 match report.result {
                     Ok(end) => eprintln!("visit={end:?}; freshness remains unproven"),
                     Err(error) => {
                         eprintln!("visit failed: {error}");
                         if once || error.is_terminal() {
+                            sync.shutdown().await;
                             output::status(sync.store())?;
                             return Err(error.into());
                         }
                     }
                 }
                 if once {
+                    sync.shutdown().await;
                     output::status(sync.store())?;
                     break;
                 }
@@ -167,7 +191,13 @@ pub async fn run(
             };
             let mut sync = HeaderSync::new(
                 store,
-                network.sync_config(config.header_capacity.get(), 4, 8_000, retry_seconds),
+                network.sync_config(
+                    config.header_capacity.get(),
+                    4,
+                    8_000,
+                    retry_seconds,
+                    peer_cache.clone(),
+                ),
             )?
             .with_fee_policy(fee_policy);
             let limits = BlockDownloadConfig {
@@ -182,9 +212,10 @@ pub async fn run(
             };
             let block = tokio::select! {
                 biased;
-                result = &mut shutdown => { result?; return Err(interrupted()); }
+                result = &mut shutdown => { result?; sync.shutdown().await; return Err(interrupted()); }
                 result = sync.fetch_block(height, hash, limits) => result?,
             };
+            sync.shutdown().await;
             output::block(&path, &block)?;
             eprintln!(
                 "wrote height={height} hash={hash} to {}; protection unchanged",

@@ -50,6 +50,7 @@ fn anchor() -> StoreAnchor {
 
 fn config(peers: Vec<SocketAddr>, capacity: usize) -> SyncConfig {
     SyncConfig {
+        peer_pool: fedimint_light_node::peer_pool_config::PeerPoolConfig::manual_only(),
         peers,
         handshake_timeout: Duration::from_secs(2),
         request_timeout: Duration::from_secs(2),
@@ -252,6 +253,7 @@ async fn handshake_real_headers_ping_pruning_and_restart() {
     assert_eq!(sync.status().unwrap().height, 2035);
     assert!(sync.status().unwrap().generation > 1);
     assert_eq!(sync.store().bounds().unwrap(), (2019, 2035));
+    sync.shutdown().await;
     server.await.unwrap();
     drop(sync);
     let store =
@@ -288,11 +290,11 @@ async fn withholding_times_out_and_next_peer_progresses() {
     config.requests_per_visit = 1;
     let mut sync = service(&dir, config);
     let report = sync.step(u64::MAX).await;
-    assert_eq!(report.peer, slow_addr);
+    assert_eq!(report.peer, Some(slow_addr));
     assert!(matches!(report.result, Err(SyncError::Timeout)));
     assert_eq!(sync.status().unwrap().height, 0);
     let report = sync.step(u64::MAX).await;
-    assert_eq!(report.peer, good_addr);
+    assert_eq!(report.peer, Some(good_addr));
     assert_eq!(report.result.unwrap(), VisitEnd::RequestLimit);
     assert_eq!(sync.status().unwrap().height, 2);
     slow_server.await.unwrap();
@@ -487,6 +489,7 @@ async fn retained_fork_accumulates_across_batches_and_respects_protection() {
             assert_eq!(sync.store().header(478_559).unwrap(), fork[0]);
             assert_eq!(sync.status().unwrap().generation, 1);
         }
+        sync.shutdown().await;
         server.await.unwrap();
         drop(sync);
         let reopened =

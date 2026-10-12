@@ -16,18 +16,24 @@ Validated mainnet storage keeps one fixed-size validation checkpoint per retaine
 header at or above the trust anchor, including retarget and median-time context,
 plus a pinned protection floor.
 Candidate suffixes are bounded by header capacity; no alternative branch pool exists.
-Header synchronization bounds configured peers, sequential visits, message counts,
-wire bytes, deadlines and candidate state globally per service, not per connection.
-It has one socket and no task or event queues. Protocol header counts and version
+Header synchronization bounds manual/discovered candidates, maintained sockets,
+sequential foreground visits, message counts, wire bytes, deadlines and candidate
+state. One global foreground candidate/body budget remains separate from aggregate
+idle control budgets and bounded coalesced hints. Protocol header counts and version
 strings pass structural preflight before variable decoding; unsolicited bodies are
 rejected before payload reads. On-demand body retrieval shares that exclusive owner:
-one socket, payload and decoder, no queues or persistent body cache. Attempts,
+one leased socket, payload and decoder, no body queues or persistent body cache. Attempts,
 aggregate received bytes, payload/element budgets and absolute visit/total deadlines
 bound each request across peers. Fresh bootstrap caps HTTPS sources, requests,
 reply bodies, deadlines, peers, global P2P bytes and header requests. Its staged
 history is bounded by retention capacity plus necessary checkpoint context;
-publication exposes only the authenticated recent window. Historical rows below
-the trust checkpoint carry no per-header validation context. Dropping the future releases owned resources;
+publication exposes only the authenticated recent window. Learned addresses are
+untrusted availability hints; public-only discovery filters, source/destination quotas,
+backoff, aging and stable/exploratory rotation bound their influence. The optional
+versioned successful-peer cache cannot alter chain state. Historical rows below
+the trust checkpoint carry no per-header validation context. Dropping a foreground
+future releases its leased stream; explicit shutdown joins owned idle drivers.
+OS resolver jobs have separately documented cancellation limits;
 bounded synchronous decoding between awaits cannot be interrupted. Returned blocks
 belong to the caller. Only full-history, witness-serving peers qualify, even near
 the local tip; neither selected nor advertised height proves a limited peer's range.

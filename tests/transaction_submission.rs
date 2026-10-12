@@ -64,6 +64,7 @@ fn service(dir: &tempfile::TempDir, peers: Vec<SocketAddr>) -> HeaderSync {
     HeaderSync::new(
         store,
         SyncConfig {
+            peer_pool: fedimint_light_node::peer_pool_config::PeerPoolConfig::manual_only(),
             peers,
             handshake_timeout: Duration::from_secs(1),
             request_timeout: Duration::from_secs(1),
@@ -153,7 +154,6 @@ async fn finish(stream: &mut TcpStream) {
     send(stream, NetworkMessage::Pong(nonce.wrapping_add(1))).await;
     send(stream, NetworkMessage::FeeFilter(1)).await;
     send(stream, NetworkMessage::Pong(nonce)).await;
-    assert_eq!(stream.read(&mut [0; 1]).await.unwrap(), 0);
 }
 
 #[tokio::test]
@@ -163,14 +163,15 @@ async fn delivers_exact_legacy_and_witness_bytes_and_allows_explicit_replay() {
     let mut node = service(&dir, vec![addr]);
     let before = node.status().unwrap();
     let peer = tokio::spawn(async move {
+        let mut stream = handshake(&listener).await;
         for witness in [false, true, true] {
-            let mut stream = handshake(&listener).await;
             assert_eq!(
                 read(&mut stream).await,
                 NetworkMessage::Tx(transaction(witness))
             );
             finish(&mut stream).await;
         }
+        assert_eq!(stream.read(&mut [0; 1]).await.unwrap(), 0);
     });
     for witness in [false, true, true] {
         let tx = transaction(witness);
@@ -184,6 +185,7 @@ async fn delivers_exact_legacy_and_witness_bytes_and_allows_explicit_replay() {
         assert!(report.sent_bytes > serialize(&tx).len() + 24);
         assert_eq!(node.status().unwrap(), before);
     }
+    node.shutdown().await;
     peer.await.unwrap();
 }
 
@@ -202,6 +204,8 @@ async fn refusals_disconnects_and_partial_success_are_reported_per_peer() {
             NetworkMessage::Version(version(addr, false, true)),
         )
         .await;
+        send(&mut stream, NetworkMessage::Verack).await;
+        assert_eq!(read(&mut stream).await, NetworkMessage::Verack);
         assert_eq!(stream.read(&mut [0; 1]).await.unwrap(), 0);
         let (mut stream, _) = b.accept().await.unwrap();
         read(&mut stream).await;
@@ -237,6 +241,8 @@ async fn non_witness_peer_is_refused_even_for_legacy_submission() {
             NetworkMessage::Version(version(addr, true, false)),
         )
         .await;
+        send(&mut stream, NetworkMessage::Verack).await;
+        assert_eq!(read(&mut stream).await, NetworkMessage::Verack);
         assert_eq!(stream.read(&mut [0; 1]).await.unwrap(), 0);
     });
     let report = node
@@ -259,6 +265,8 @@ async fn old_protocol_version_is_refused_before_payload_write() {
         let mut old = version(addr, true, true);
         old.version = 70011;
         send(&mut stream, NetworkMessage::Version(old)).await;
+        send(&mut stream, NetworkMessage::Verack).await;
+        assert_eq!(read(&mut stream).await, NetworkMessage::Verack);
         assert_eq!(stream.read(&mut [0; 1]).await.unwrap(), 0);
     });
     let report = node
@@ -397,10 +405,12 @@ async fn aggregate_budgets_attempt_caps_and_rotation_apply_across_calls() {
     let dir = tempfile::tempdir().unwrap();
     let mut node = service(&dir, vec![aa, ba]);
     let peers = tokio::spawn(async move {
+        let mut retained = Vec::new();
         for listener in [&a, &b] {
             let mut stream = handshake(listener).await;
             assert!(matches!(read(&mut stream).await, NetworkMessage::Tx(_)));
             finish(&mut stream).await;
+            retained.push(stream);
         }
     });
     for expected in [aa, ba] {
@@ -464,9 +474,9 @@ async fn cancellation_after_delivery_closes_current_socket_and_allows_retry() {
         read(&mut second).await;
         delivered.send(()).unwrap();
         assert_eq!(second.read(&mut [0; 1]).await.unwrap(), 0);
-        let mut replay = handshake(&a).await;
-        assert!(matches!(read(&mut replay).await, NetworkMessage::Tx(_)));
-        finish(&mut replay).await;
+        // Canceling the second lease must not discard the first clean connection.
+        assert!(matches!(read(&mut first).await, NetworkMessage::Tx(_)));
+        finish(&mut first).await;
     });
     let tx = transaction(true);
     {

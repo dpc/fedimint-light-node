@@ -7,7 +7,7 @@ pub struct TransactionSubmissionConfig {
     pub max_transaction_bytes: usize,
     /// Maximum weight units, from one through 400,000 (not a standardness check).
     pub max_weight: u64,
-    /// Sequential attempts, one through sixteen, also capped at configured peers.
+    /// Sequential attempts, one through sixteen; manual-only mode caps at its candidates.
     pub max_attempts: usize,
     /// All pacing and attempts, positive and no more than two minutes.
     pub total_timeout: Duration,

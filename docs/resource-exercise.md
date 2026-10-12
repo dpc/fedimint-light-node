@@ -11,6 +11,13 @@ tests already cover failure handling; the runner reuses them instead of building
 a second peer simulator. The four larger measurement tests are explicitly
 ignored in normal CI and run by this command.
 
+The maintained-pool regression now runs in normal CI: `cargo test --lib peer_pool`.
+It fills all four socket slots, holds a foreground lease while servicing the other
+connections, cycles leases through the 64-frame idle ceiling, and checks aggregate
+budget rollover, bounded candidate populations, rotation and joined shutdown.
+These are resource-accounting regressions, not new RSS measurements for the tables
+below.
+
 ## Reproduce
 
 From the repository root on Linux, with Python 3 and GNU `time` on `PATH`:

@@ -41,6 +41,11 @@ own the contract coherently.
 
 ## Anchor and headers
 
+DNS seeds, advertised addresses, successful-peer caches and maintained connection
+counts are availability hints, not additional chain authorities or a quorum.
+Useful service affects connection retention, never header or body acceptance.
+Discovery cannot change the trusted checkpoint or protected history.
+
 Bootstrap accepts a network, height, and hash only after independently operated
 HTTPS sources agree at the same height. Reputation alone does not establish
 independence. Quorum and confirmation margin are explicit configurable policy;

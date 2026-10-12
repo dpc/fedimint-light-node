@@ -32,8 +32,10 @@ pub struct BootstrapConfig {
     pub request_timeout: Duration,
     /// Total asynchronous bootstrap deadline across all sources and peers.
     pub total_timeout: Duration,
-    /// One to sixteen caller-resolved P2P addresses for bulk ancestry retrieval.
+    /// Up to sixteen explicit addresses; discovery can initialize an empty list.
     pub peers: Vec<SocketAddr>,
+    /// Bounded maintained mainnet connections and discovery policy.
+    pub peer_pool: crate::peer_pool_config::PeerPoolConfig,
     /// Global number of getheaders requests across peers, not per peer.
     pub max_header_requests: usize,
     /// Global received P2P byte budget across handshakes, chatter and headers.
@@ -61,6 +63,7 @@ impl Default for BootstrapConfig {
             request_timeout: Duration::from_secs(20),
             total_timeout: Duration::from_secs(600),
             peers: Vec::new(),
+            peer_pool: crate::peer_pool_config::PeerPoolConfig::default(),
             max_header_requests: 128,
             max_peer_bytes: 32 * 1024 * 1024,
             store: StoreConfig {
@@ -94,7 +97,9 @@ impl BootstrapConfig {
             && self.request_timeout <= Duration::from_secs(60)
             && !self.total_timeout.is_zero()
             && self.total_timeout <= Duration::from_secs(3600)
-            && (1..=16).contains(&self.peers.len())
+            && self.peers.len() <= 16
+            && (self.peer_pool.discovery || !self.peers.is_empty())
+            && self.peer_pool.valid()
             && (1..=2048).contains(&self.max_header_requests)
             && (162_027..=256 * 1024 * 1024).contains(&self.max_peer_bytes)
             && self.store.header_capacity.get() <= 105_120

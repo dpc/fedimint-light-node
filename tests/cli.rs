@@ -62,7 +62,7 @@ fn help_and_argument_errors_are_offline() {
         vec!["--fixed-fee-sats-per-kvb", "18446744073709551616", "status"],
         vec!["--fixed-fee-sats-per-kvb", "1.5", "status"],
         vec!["--fixed-fee-sats-per-kvb", "-1", "status"],
-        vec!["sync"],
+        vec!["sync", "--manual-only"],
         vec!["sync", "--peer", "hostname:8333"],
         vec!["sync", "--peer", "127.0.0.1:1", "--requests", "17"],
         vec!["fetch", "--peer", "127.0.0.1:1", "--height", "0"],
@@ -211,7 +211,7 @@ fn bootstrap_refuses_existing_destination_without_network_or_replacement() {
     let db = dir.path().join("existing");
     std::fs::write(&db, b"do not replace").unwrap();
     let output = command(&db)
-        .args(["bootstrap", "--peer", "127.0.0.1:1"])
+        .args(["bootstrap", "--manual-only", "--peer", "127.0.0.1:1"])
         .output()
         .unwrap();
     assert!(!output.status.success());
@@ -241,6 +241,7 @@ fn fetch_refuses_database_and_aliases_without_changing_them() {
         let result = command(&db)
             .args([
                 "fetch",
+                "--manual-only",
                 "--peer",
                 "127.0.0.1:1",
                 "--height",
@@ -262,7 +263,7 @@ fn invalid_peer_count_and_future_fetch_fail_without_creation() {
     let db = dir.path().join("chain");
     create(&db);
     let mut sync = command(&db);
-    sync.args(["sync", "--once"]);
+    sync.args(["sync", "--once", "--manual-only"]);
     for _ in 0..17 {
         sync.args(["--peer", "127.0.0.1:1"]);
     }
@@ -274,6 +275,7 @@ fn invalid_peer_count_and_future_fetch_fail_without_creation() {
     let result = command(&db)
         .args([
             "fetch",
+            "--manual-only",
             "--peer",
             "127.0.0.1:1",
             "--height",
@@ -405,6 +407,7 @@ fn loopback_sync_once_and_fetch_publish_real_block_bytes() {
     let peer = listener.local_addr().unwrap().to_string();
     let child = Child::start(command(&db).args([
         "sync",
+        "--manual-only",
         "--peer",
         &peer,
         "--once",
@@ -424,6 +427,7 @@ fn loopback_sync_once_and_fetch_publish_real_block_bytes() {
         command(&db)
             .args([
                 "fetch",
+                "--manual-only",
                 "--peer",
                 &peer,
                 "--height",
@@ -459,6 +463,7 @@ fn stalled_peer_once_exits_with_error_without_claiming_health() {
     let peer = listener.local_addr().unwrap().to_string();
     let child = Child::start(command(&db).args([
         "sync",
+        "--manual-only",
         "--peer",
         &peer,
         "--once",
@@ -485,6 +490,7 @@ fn sigterm_cancels_owned_socket_and_allows_offline_reopen() {
     let peer = listener.local_addr().unwrap().to_string();
     let child = Child::start(command(&db).args([
         "sync",
+        "--manual-only",
         "--peer",
         &peer,
         "--retry-seconds",
@@ -535,6 +541,7 @@ fn broadcast_delivers_witness_bytes_and_reports_only_local_write_success() {
         command(&db)
             .args([
                 "broadcast",
+                "--manual-only",
                 "--peer",
                 &listener.local_addr().unwrap().to_string(),
                 "--retry-seconds",
@@ -570,7 +577,13 @@ fn broadcast_rejects_malformed_oversized_and_nonregular_files_offline() {
     for bytes in [vec![], b"0100000001".to_vec(), vec![0; 400_001]] {
         std::fs::write(&input, bytes).unwrap();
         let result = command(&db)
-            .args(["broadcast", "--peer", "127.0.0.1:1", "--input"])
+            .args([
+                "broadcast",
+                "--manual-only",
+                "--peer",
+                "127.0.0.1:1",
+                "--input",
+            ])
             .arg(&input)
             .output()
             .unwrap();
@@ -578,7 +591,13 @@ fn broadcast_rejects_malformed_oversized_and_nonregular_files_offline() {
         assert!(!db.exists());
     }
     let result = command(&db)
-        .args(["broadcast", "--peer", "127.0.0.1:1", "--input"])
+        .args([
+            "broadcast",
+            "--manual-only",
+            "--peer",
+            "127.0.0.1:1",
+            "--input",
+        ])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -588,7 +607,13 @@ fn broadcast_rejects_malformed_oversized_and_nonregular_files_offline() {
         let link = dir.path().join("link");
         std::os::unix::fs::symlink(&input, &link).unwrap();
         let result = command(&db)
-            .args(["broadcast", "--peer", "127.0.0.1:1", "--input"])
+            .args([
+                "broadcast",
+                "--manual-only",
+                "--peer",
+                "127.0.0.1:1",
+                "--input",
+            ])
             .arg(&link)
             .output()
             .unwrap();
@@ -603,7 +628,13 @@ fn broadcast_rejects_malformed_oversized_and_nonregular_files_offline() {
         );
         let child = Child::start(
             command(&db)
-                .args(["broadcast", "--peer", "127.0.0.1:1", "--input"])
+                .args([
+                    "broadcast",
+                    "--manual-only",
+                    "--peer",
+                    "127.0.0.1:1",
+                    "--input",
+                ])
                 .arg(&fifo),
         );
         assert!(String::from_utf8_lossy(&child.finish().stderr).contains("regular file"));
@@ -627,6 +658,7 @@ fn broadcast_sigterm_after_delivery_reports_indeterminate_and_releases_store() {
         command(&db)
             .args([
                 "broadcast",
+                "--manual-only",
                 "--peer",
                 &listener.local_addr().unwrap().to_string(),
                 "--retry-seconds",

@@ -65,7 +65,17 @@ async fn real_witness_transport_and_stripped_witness_rejection() {
                 .await
                 .unwrap();
         });
-        let mut stream = TcpStream::connect(addr).await.unwrap();
+        let mut stream = PeerConnection {
+            stream: TcpStream::connect(addr).await.unwrap(),
+            addr,
+            services: ServiceFlags::NETWORK | ServiceFlags::WITNESS,
+            relay: true,
+            learned: Vec::new(),
+            requested_addresses: false,
+            idle_window: tokio::time::Instant::now(),
+            idle_bytes: 256 * 1024,
+            idle_frames: 64,
+        };
         let result = request_block(
             &mut stream,
             hash,
@@ -82,3 +92,5 @@ async fn real_witness_transport_and_stripped_witness_rejection() {
         server.await.unwrap();
     }
 }
+use crate::peer_connection::PeerConnection;
+use bitcoin::p2p::ServiceFlags;

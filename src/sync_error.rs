@@ -4,6 +4,9 @@ use crate::store_error::StoreError;
 /// A bounded peer failure or a terminal local/recovery error.
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
+    /// No eligible candidate or live connection is currently available.
+    #[error("no eligible peers; discovery or retry backoff is pending")]
+    NoPeers,
     /// Caller budgets are invalid.
     #[error("invalid synchronization configuration")]
     Configuration,

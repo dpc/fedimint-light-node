@@ -3,8 +3,9 @@
 `HeaderSync::submit_transaction` fills the outbound transaction operation without
 adding a mempool, wallet, fee estimator, queue or guardian adapter. It borrows the
 same owner exclusively as header synchronization and body retrieval. One call owns
-at most one socket and one serialized payload, tries configured peers sequentially,
+at most one leased socket and one serialized payload, tries pool peers sequentially,
 and never modifies the chain store. Repeating a call explicitly rebroadcasts.
+Idle connections remain maintained under the separate bounded pool control budget.
 
 ## Observations, not acceptance
 
@@ -34,9 +35,9 @@ Every frame reservation includes its 24-byte envelope. Declared inbound payloads
 and whole outbound frames are charged before I/O, so failures conservatively
 consume reserved bytes, not just observed bytes. The handshake accepts at most
 32 frames; ignored messages also consume bytes, message counts and absolute time.
-No peer can extend a deadline by trickling data or sending pings. Configured peers
-and attempts remain finite; the shared round-robin cursor advances before pacing,
-including cancellation.
+No peer can extend a deadline by trickling data or sending pings. Candidates and
+attempts remain finite; dial pacing and retry state are reserved before awaiting,
+including cancellation. Maintained sockets return to the back of the service queue.
 
 Canonical serialized bytes and weight are each capped at 400,000, independently
 configurable downward. An allocation-free encoding sink rejects excess bytes before

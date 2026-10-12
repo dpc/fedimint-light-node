@@ -4,12 +4,12 @@ use crate::block_decode::BlockDecodeLimits;
 
 /// Explicit whole-operation budgets for a single-owner block retrieval.
 ///
-/// There is one socket, payload and decoder globally per `HeaderSync`, shared
+/// There is one foreground payload and decoder globally per `HeaderSync`, shared
 /// with header synchronization through exclusive borrowing, never per peer.
 /// Returned blocks belong to the caller and no longer count against this budget.
 #[derive(Debug, Clone, Copy)]
 pub struct BlockDownloadConfig {
-    /// One to sixteen attempts, capped further at the configured peer count.
+    /// One to sixteen leases; manual-only mode further caps this at its candidate count.
     pub max_attempts: usize,
     /// Absolute deadline for all attempts and pacing, at most two minutes.
     pub total_timeout: Duration,

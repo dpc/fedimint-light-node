@@ -4,7 +4,6 @@ use bitcoin::hashes::Hash;
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::p2p::message_blockdata::GetHeadersMessage;
 use bitcoin::{Block, BlockHash, Target, Transaction, block::Header};
-use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 
 use crate::block_download::download;
@@ -13,8 +12,9 @@ use crate::block_download_error::BlockDownloadError;
 use crate::declared_pow::check_declared_pow;
 use crate::fee_policy::FeePolicy;
 use crate::header_error::HeaderError;
-use crate::header_wire::{Message, receive, send};
-use crate::peer_handshake::handshake;
+use crate::header_wire::{Message, send};
+use crate::peer_connection::PeerConnection;
+use crate::peer_pool::PeerPool;
 use crate::store_error::StoreError;
 use crate::sync_config::SyncConfig;
 use crate::sync_error::SyncError;
@@ -27,15 +27,14 @@ use crate::validated_header_store::ValidatedHeaderStore;
 
 /// Caller-driven mainnet v1 header synchronization from an initialized trusted store.
 ///
-/// Each `step` visits one configured peer; repeated calls provide paced, fair
-/// round-robin synchronization. There is no background task, listener, discovery,
-/// runtime creation, or global configuration. A caller must supply
-/// a Tokio runtime with I/O and time enabled. One global socket and candidate
-/// avoid multiplicative per-peer budgets; sequential peers trade throughput and
-/// availability for a small auditable lifecycle, not production eclipse resistance.
+/// Each paced `step` leases a peer from the maintained outbound pool. Bounded idle
+/// drivers service other connections; DNS and address hints supplement optional
+/// manual peers. The caller supplies a Tokio runtime with I/O and time enabled.
+/// No runtime, listener or global configuration is installed. One foreground
+/// candidate and body decoder avoid multiplicative per-peer download budgets.
 ///
 /// Dropping the `step` future closes its socket and drops any unselected candidate.
-/// No work survives cancellation. Already committed progress remains observable
+/// Other idle connections remain maintained. Already committed progress remains observable
 /// through `status`, including when a later request fails or gets cancelled.
 /// Synchronous bounded validation and redb transactions run between awaits:
 /// they cannot be interrupted and may block the executor. Use a caller-owned
@@ -45,8 +44,8 @@ pub struct HeaderSync {
     store: ValidatedHeaderStore,
     /// Validated global resource and time budgets.
     config: SyncConfig,
-    /// Next configured peer; advanced before every attempt, even cancellation.
-    next_peer: usize,
+    /// Sole owner of candidates, maintained sockets and bounded idle drivers.
+    pool: PeerPool,
     /// Monotonic in-memory selection generation, not a persisted event log.
     generation: u64,
     /// Terminal local/recovery failures require explicit caller intervention.
@@ -85,8 +84,8 @@ impl SyncStatus {
 /// One bounded peer visit, possibly with committed progress before its result.
 #[derive(Debug)]
 pub struct SyncReport {
-    /// Configured address selected for this attempt.
-    pub peer: SocketAddr,
+    /// Address selected for this attempt, absent when no candidate was eligible.
+    pub peer: Option<SocketAddr>,
     /// Empty response, exhausted visit budget, or typed failure.
     pub result: Result<VisitEnd, SyncError>,
 }
@@ -96,7 +95,7 @@ pub struct SyncReport {
 pub enum VisitEnd {
     /// The peer supplied no further headers, not evidence of an honest fresh tip.
     EmptyResponse,
-    /// Fairness budget exhausted; another call visits the next configured peer.
+    /// Fairness budget exhausted; another call leases another available pool connection.
     RequestLimit,
 }
 
@@ -107,9 +106,9 @@ impl HeaderSync {
             return Err(SyncError::Configuration);
         }
         Ok(Self {
+            pool: PeerPool::new(&config.peers, config.peer_pool.clone())?,
             store,
             config,
-            next_peer: 0,
             generation: 0,
             stopped: false,
             fee_policy: FeePolicy::default(),
@@ -186,9 +185,19 @@ impl HeaderSync {
         result
     }
 
-    /// Return storage ownership; no network work or background tasks remain.
+    /// Return storage ownership and abort owned pool tasks; use `shutdown` to join first.
     pub fn into_store(self) -> ValidatedHeaderStore {
         self.store
+    }
+
+    /// Close and join all owned idle connections; OS DNS shutdown has documented limits.
+    pub async fn shutdown(&mut self) {
+        self.pool.shutdown().await;
+    }
+
+    /// Return live idle sockets, known candidates and whether the last cache write failed.
+    pub fn peer_counts(&self) -> (usize, usize, bool) {
+        self.pool.counts()
     }
 
     /// Submit a caller-owned transaction over bounded sequential mainnet connections.
@@ -196,7 +205,7 @@ impl HeaderSync {
     /// Admission bounds bytes and weight before outbound allocation; it does not
     /// check scripts, spends, fees, standardness or consensus validity. This exclusive
     /// borrow shares the network owner and peer rotation with sync and block retrieval.
-    /// No queue, cache, retry task, database write or background socket is created.
+    /// No transaction queue, cache, retry task or chain database write is created.
     ///
     /// An `Ok` report can contain zero submissions: inspect `report.submitted()`.
     /// Only a completed full frame write counts, not peer receipt, mempool acceptance,
@@ -216,14 +225,7 @@ impl HeaderSync {
         if self.stopped {
             return Err(TransactionSubmissionError::Stopped);
         }
-        submit(
-            transaction,
-            &self.config.peers,
-            &mut self.next_peer,
-            self.config.retry_delay,
-            config,
-        )
-        .await
+        submit(transaction, &mut self.pool, self.config.retry_delay, config).await
     }
 
     /// Retrieve a complete witness-bearing block matching a retained selected hash.
@@ -246,13 +248,13 @@ impl HeaderSync {
     /// # }
     /// ```
     ///
-    /// One socket, payload and decoder are shared globally per service, not per
-    /// peer. There is no body cache, pipeline, queue or detached task. Dropping the
+    /// One foreground payload and decoder are shared globally per service, not per
+    /// peer. There is no body cache, pipeline or queue. Dropping the
     /// future immediately releases network/buffer ownership; synchronous bounded
     /// decode/checking between awaits cannot be interrupted. Returned blocks are
     /// caller-owned and excluded from the library budget. No store writes occur.
     ///
-    /// Each call tries at most one visit per configured peer entry with pacing and absolute
+    /// Each call uses a bounded number of pool leases with pacing and absolute
     /// visit/total deadlines. Only NODE_NETWORK + NODE_WITNESS peers qualify:
     /// limited-only peers promise their own recent 288 blocks, and neither our tip
     /// nor their advertised height proves that our request is in that range.
@@ -300,8 +302,7 @@ impl HeaderSync {
             })?
             .1;
         download(
-            &self.config.peers,
-            &mut self.next_peer,
+            &mut self.pool,
             self.config.retry_delay,
             tip_height,
             height,
@@ -322,35 +323,77 @@ impl HeaderSync {
     /// Cancel by dropping this future (for example with `tokio::select!`); inspect
     /// `status` afterward because a completed atomic batch may have made progress.
     pub async fn step(&mut self, now: u64) -> SyncReport {
-        let peer = self.config.peers[self.next_peer];
         if self.stopped {
             return SyncReport {
-                peer,
+                peer: None,
                 result: Err(SyncError::Stopped),
             };
         }
-        self.next_peer = (self.next_peer + 1) % self.config.peers.len();
         sleep(self.config.retry_delay).await;
-        let result = self.visit(peer, now).await;
+        let tip = match self.store.bounds() {
+            Ok((_, tip)) => tip,
+            Err(error) => {
+                self.stopped = true;
+                return SyncReport {
+                    peer: None,
+                    result: Err(error.into()),
+                };
+            }
+        };
+        let mut sent = usize::MAX;
+        let mut connection = match self
+            .pool
+            .acquire(
+                tip,
+                self.config.retry_delay,
+                self.config.handshake_timeout,
+                &mut 2_000_000,
+                &mut sent,
+                true,
+            )
+            .await
+        {
+            Ok(connection) => connection,
+            Err((peer, error)) => {
+                return SyncReport {
+                    peer,
+                    result: Err(error),
+                };
+            }
+        };
+        let peer = Some(connection.addr);
+        let mut useful = false;
+        let result = self.visit(&mut connection, now, &mut useful).await;
         if result.as_ref().is_err_and(SyncError::is_terminal) {
             self.stopped = true;
+        }
+        if result.is_ok() {
+            self.pool.release(connection, useful);
         }
         SyncReport { peer, result }
     }
 
-    async fn visit(&mut self, peer: SocketAddr, now: u64) -> Result<VisitEnd, SyncError> {
-        let mut stream = timeout(self.config.handshake_timeout, self.handshake(peer))
-            .await
-            .map_err(|_| SyncError::Timeout)??;
+    async fn visit(
+        &mut self,
+        stream: &mut PeerConnection,
+        now: u64,
+        useful: &mut bool,
+    ) -> Result<VisitEnd, SyncError> {
         let mut candidate: Vec<Header> = Vec::with_capacity(self.config.candidate_headers);
         let mut parent = 0;
-        for _ in 0..self.config.requests_per_visit {
+        for request_index in 0..self.config.requests_per_visit {
             let locator = if let Some(last) = candidate.last() {
                 vec![(parent + candidate.len() as u64, last.block_hash())]
             } else {
-                self.locator()?
+                // Start one header behind when possible: checked canonical overlap
+                // demonstrates useful service even when no new block was mined.
+                let mut locator = self.locator()?;
+                if request_index == 0 && self.config.peer_pool.discovery && locator.len() > 1 {
+                    locator.swap(0, 1);
+                }
+                locator
             };
-            let headers = timeout(self.config.request_timeout, request(&mut stream, &locator))
+            let headers = timeout(self.config.request_timeout, request(stream, &locator))
                 .await
                 .map_err(|_| SyncError::Timeout)??;
             if headers.is_empty() {
@@ -373,12 +416,14 @@ impl HeaderSync {
                     && parent < self.store.bounds()?.1
                     && self.store.header(parent + 1)? == header
                 {
+                    *useful = true;
                     parent += 1;
                     continue;
                 }
                 candidate.push(header);
                 if candidate.len() == self.config.candidate_headers {
                     self.select_candidate(&mut parent, &mut candidate, now)?;
+                    *useful |= candidate.is_empty();
                     if !candidate.is_empty() {
                         return Err(SyncError::UnsupportedCandidate);
                     }
@@ -386,6 +431,7 @@ impl HeaderSync {
             }
             if !candidate.is_empty() {
                 self.select_candidate(&mut parent, &mut candidate, now)?;
+                *useful |= candidate.is_empty();
             }
         }
         Ok(VisitEnd::RequestLimit)
@@ -429,20 +475,14 @@ impl HeaderSync {
         }
         Ok(result)
     }
-
-    async fn handshake(&self, peer: SocketAddr) -> Result<TcpStream, SyncError> {
-        Ok(handshake(peer, self.store.bounds()?.1, &mut 2_000_000)
-            .await?
-            .0)
-    }
 }
 
 async fn request(
-    stream: &mut TcpStream,
+    stream: &mut PeerConnection,
     locator: &[(u64, BlockHash)],
 ) -> Result<Vec<Header>, SyncError> {
     send(
-        stream,
+        &mut stream.stream,
         NetworkMessage::GetHeaders(GetHeadersMessage::new(
             locator.iter().map(|(_, hash)| *hash).collect(),
             BlockHash::all_zeros(),
@@ -451,9 +491,9 @@ async fn request(
     .await?;
     let mut bytes = 2_000_000;
     for _ in 0..32 {
-        match receive(stream, &mut bytes).await? {
+        match stream.receive(&mut bytes, None).await? {
             Message::Headers(headers) => return Ok(headers),
-            Message::Ping(nonce) => send(stream, NetworkMessage::Pong(nonce)).await?,
+            Message::Ping(nonce) => send(&mut stream.stream, NetworkMessage::Pong(nonce)).await?,
             Message::Ignore | Message::Pong(_) => {}
             _ => return Err(SyncError::Protocol("unexpected request message")),
         }

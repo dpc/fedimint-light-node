@@ -28,7 +28,7 @@ pub enum BootstrapError {
     /// HTTP transport or TLS failed, including truncated replies.
     #[error(transparent)]
     Http(#[from] reqwest::Error),
-    /// No configured peer completed authenticated history retrieval.
+    /// No eligible peer completed authenticated history retrieval.
     #[error(transparent)]
     Peer(#[from] crate::sync_error::SyncError),
     /// Ancestry or checkpoint context failed authentication.

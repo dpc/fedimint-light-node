@@ -68,6 +68,7 @@ async fn run(args: Args) -> Result<(), Box<dyn Error>> {
     tokio::pin!(stop);
     let store = if args.bootstrap {
         let config = BootstrapConfig {
+            peer_pool: fedimint_light_node::peer_pool_config::PeerPoolConfig::manual_only(),
             store: storage,
             peers: vec![args.peer],
             ..BootstrapConfig::default()
@@ -90,6 +91,7 @@ async fn run(args: Args) -> Result<(), Box<dyn Error>> {
     let mut node = HeaderSync::new(
         store,
         SyncConfig {
+            peer_pool: fedimint_light_node::peer_pool_config::PeerPoolConfig::manual_only(),
             peers: vec![args.peer],
             handshake_timeout: Duration::from_secs(10),
             request_timeout: Duration::from_secs(10),

@@ -6,7 +6,6 @@
 
 use std::collections::hash_map::RandomState;
 use std::hash::BuildHasher;
-use std::net::SocketAddr;
 use std::time::Duration;
 
 use bitcoin::consensus::{Encodable, serialize};
@@ -14,12 +13,12 @@ use bitcoin::hashes::{Hash, sha256d};
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::{Network, Transaction};
 use tokio::io::AsyncWriteExt;
-use tokio::net::TcpStream;
-use tokio::time::{Instant, sleep, timeout_at};
+use tokio::time::{Instant, timeout_at};
 
 use crate::encoded_size_limit::EncodedSizeLimit;
-use crate::header_wire::{Message, receive, send_bounded};
-use crate::peer_handshake::submission_handshake;
+use crate::header_wire::{Message, send_bounded};
+use crate::peer_connection::PeerConnection;
+use crate::peer_pool::PeerPool;
 use crate::sync_error::SyncError;
 use crate::transaction_submission_config::TransactionSubmissionConfig;
 use crate::transaction_submission_report::{
@@ -55,8 +54,7 @@ pub(crate) fn admit(
 /// Submit to each selected peer once, preserving every completed write observation.
 pub(crate) async fn submit(
     tx: &Transaction,
-    peers: &[SocketAddr],
-    next_peer: &mut usize,
+    pool: &mut PeerPool,
     retry_delay: Duration,
     config: TransactionSubmissionConfig,
 ) -> Result<TransactionSubmissionReport, TransactionSubmissionError> {
@@ -73,24 +71,47 @@ pub(crate) async fn submit(
     let mut report = TransactionSubmissionReport {
         txid: tx.compute_txid(),
         wtxid: tx.compute_wtxid(),
-        attempts: Vec::with_capacity(config.max_attempts.min(peers.len())),
+        attempts: Vec::with_capacity(config.max_attempts),
         received_bytes: 0,
         sent_bytes: 0,
     };
     let mut received = config.max_received_bytes;
     let mut sent = config.max_sent_bytes;
-    for _ in 0..config.max_attempts.min(peers.len()) {
-        let peer = peers[*next_peer];
-        *next_peer = (*next_peer + 1) % peers.len();
+    let mut tried = Vec::new();
+    for _ in 0..config.max_attempts.min(pool.attempt_limit()) {
+        let mut peer = None;
         let mut started = false;
         let mut completed = false;
         // Pacing belongs to the total deadline, not the peer's visit deadline.
-        let result = if timeout_at(deadline, sleep(retry_delay)).await.is_err() {
-            Err(SubmissionPeerError::Timeout)
-        } else {
+        let result = {
             let visit_deadline = deadline.min(Instant::now() + config.visit_timeout);
             let visit = async {
-                let mut stream = submission_handshake(peer, &mut received, &mut sent).await?;
+                let mut stream = pool
+                    .acquire(
+                        0,
+                        retry_delay,
+                        config.visit_timeout,
+                        &mut received,
+                        &mut sent,
+                        true,
+                    )
+                    .await
+                    .map_err(|(address, error)| {
+                        peer = address;
+                        error
+                    })?;
+                if tried.contains(&stream.addr) {
+                    pool.release(stream, false);
+                    return Err(SubmissionPeerError::Peer(SyncError::NoPeers));
+                }
+                peer = Some(stream.addr);
+                tried.push(stream.addr);
+                if !stream.relay || !stream.services.has(bitcoin::p2p::ServiceFlags::WITNESS) {
+                    return Err(SyncError::Protocol(
+                        "peer declines relay or lacks witness support",
+                    )
+                    .into());
+                }
                 sent = sent
                     .checked_sub(24 + payload.len())
                     .ok_or(SubmissionPeerError::SentBudget)?;
@@ -99,20 +120,36 @@ pub(crate) async fn submit(
                     return Err(SubmissionPeerError::Timeout);
                 }
                 started = true;
-                stream.write_all(&envelope).await.map_err(SyncError::from)?;
-                stream.write_all(&payload).await.map_err(SyncError::from)?;
+                stream
+                    .stream
+                    .write_all(&envelope)
+                    .await
+                    .map_err(SyncError::from)?;
+                stream
+                    .stream
+                    .write_all(&payload)
+                    .await
+                    .map_err(SyncError::from)?;
                 // No acknowledgement exists: keep this observation even if time
                 // expires immediately afterward. Never downgrade a completed write.
                 completed = true;
                 let drain_deadline = visit_deadline.min(Instant::now() + Duration::from_secs(2));
-                timeout_at(drain_deadline, drain(&mut stream, &mut received, &mut sent))
-                    .await
-                    .map_err(|_| SubmissionPeerError::Timeout)?
+                let result =
+                    timeout_at(drain_deadline, drain(&mut stream, &mut received, &mut sent))
+                        .await
+                        .map_err(|_| SubmissionPeerError::Timeout)?;
+                if result.is_ok() {
+                    pool.release(stream, false);
+                }
+                result
             };
             match timeout_at(visit_deadline, visit).await {
                 Ok(result) => result,
                 Err(_) => Err(SubmissionPeerError::Timeout),
             }
+        };
+        let Some(peer) = peer.or_else(|| pool.leased_address()) else {
+            break;
         };
         let (result, post_write) = if completed {
             (Ok(()), Some(result))
@@ -136,18 +173,20 @@ pub(crate) async fn submit(
 
 /// Drain queued control messages before closing to reduce unread-data TCP resets.
 async fn drain(
-    stream: &mut TcpStream,
+    stream: &mut PeerConnection,
     received: &mut usize,
     sent: &mut usize,
 ) -> Result<(), SubmissionPeerError> {
     // A fresh keyed hash supplies a per-exchange nonce without a global RNG.
     // This is connection correlation, not cryptographic peer authentication.
     let nonce = RandomState::new().hash_one(std::time::Instant::now());
-    send_bounded(stream, NetworkMessage::Ping(nonce), sent).await?;
+    send_bounded(&mut stream.stream, NetworkMessage::Ping(nonce), sent).await?;
     for _ in 0..32 {
-        match receive(stream, received).await? {
+        match stream.receive(received, None).await? {
             Message::Pong(reply) if reply == nonce => return Ok(()),
-            Message::Ping(nonce) => send_bounded(stream, NetworkMessage::Pong(nonce), sent).await?,
+            Message::Ping(nonce) => {
+                send_bounded(&mut stream.stream, NetworkMessage::Pong(nonce), sent).await?
+            }
             Message::Ignore | Message::Pong(_) => {}
             _ => return Err(SyncError::Protocol("unexpected post-submission message").into()),
         }

@@ -76,6 +76,7 @@ fn service(
     HeaderSync::new(
         store,
         SyncConfig {
+            peer_pool: fedimint_light_node::peer_pool_config::PeerPoolConfig::manual_only(),
             peers,
             handshake_timeout: Duration::from_secs(1),
             request_timeout: Duration::from_secs(1),
@@ -186,6 +187,7 @@ async fn retained_legacy_roundtrip_does_not_write_or_protect_state() {
     );
     assert_eq!(before, service.status().unwrap());
     assert_eq!(service.store().protected_height().unwrap(), 0);
+    service.shutdown().await;
     server.await.unwrap();
 }
 

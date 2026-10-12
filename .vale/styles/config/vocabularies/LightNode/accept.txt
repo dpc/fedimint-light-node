@@ -49,3 +49,14 @@ subprocess
 standardness
 nonces
 satoshis
+backoff
+Pieter
+Wuille
+Sjors
+Provoost
+Oeste
+multicast
+async
+Nakamoto
+Nakamoto's
+BIPs

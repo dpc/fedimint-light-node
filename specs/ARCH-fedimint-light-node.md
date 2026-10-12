@@ -17,13 +17,17 @@ A separate mainnet validator and validated-store boundary admit descendants and
 select bounded suffixes by relative work. Fixed-size context per retained descendant
 survives pruning and restart; an explicit caller protection floor prevents rollback
 through consumed history. Raw storage remains untrusted and cannot open validated
-stores. Caller-driven outbound mainnet header synchronization uses one bounded
-peer session at a time, configured addresses, deadlines and contextual admission.
-Dropping a visit cancels its network work; already committed progress remains
+stores. Caller-driven outbound mainnet header synchronization leases one connection
+from a bounded maintained pool, using manual addresses, DNS seeds and untrusted
+public address hints. Stable useful slots coexist with rotating exploration;
+peer counts and discovery never establish chain authority.
+Dropping a visit closes its leased connection; already committed progress remains
 observable. The same exclusive owner retrieves retained canonical blocks on demand
 with witness-aware requests and bounded decoding. Header selection and pruning
 cannot overlap delivery; later visits may still change unprotected selection.
-It owns no runtime, detached tasks or body cache. Fresh-store bootstrap uses
+Bounded idle drivers maintain the other connections, with owned cancellation and
+joined shutdown. It owns no runtime or body cache. A disposable bounded successful-peer
+cache is separate from chain state. Fresh-store bootstrap uses
 independent HTTPS source agreement and bounded P2P ancestry authenticated into the
 checkpoint before atomic publication. Existing stores reopen offline without
 replacing that checkpoint. HTTP transport cancellation has lower-layer DNS and
@@ -31,7 +35,7 @@ connection limits documented in [SECURITY.md](../SECURITY.md); it does not inher
 the direct P2P socket-lifecycle guarantees. A thin operational executable owns
 runtime and process signals while exposing bootstrap, offline status/protection,
 header visits, body-file export and bounded transaction submission through these APIs.
-Submission shares the exclusive network owner without a mempool or retry queue;
+Submission shares the pool and exclusive foreground owner without a mempool or retry queue;
 a completed write establishes neither acceptance nor propagation. Guardian integration below
 remains unimplemented. Fee information is caller configuration: unavailable by
 default or a positive operator-supplied static rate, not an estimator or a new

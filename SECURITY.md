@@ -3,7 +3,7 @@
 This library is not a Bitcoin consensus validator. The governing acceptance
 contract and residual trust are in
 [SPEC-chain-trust](specs/SPEC-chain-trust.md); concrete bootstrap policy and
-limits are in the [README](README.md#initial-trusted-bootstrap).
+limits are in the [operation guide](docs/guide.md#initial-trusted-bootstrap).
 
 ## Trusted inputs
 
@@ -40,9 +40,25 @@ request as a strict one-socket or no-background-work guarantee for HTTPS.
 Callers requiring a hard process-wide shutdown or resolver resource bound need
 isolation beyond this API.
 
-Directly owned P2P work uses caller-resolved addresses and closes on cancellation.
-There is no library-created runtime, maintenance task, permanent source oracle
-or body cache. Synchronous bounded hashing, validation and durable publication
+P2P discovery uses DNS and bounded legacy address samples only as availability
+hints. Automatic targets must pass public-unicast and default-port checks;
+explicit manual targets can be private. Prefix diversity and connection counts
+do not prove independent ownership or exclude eclipse attacks. The bounded
+successful-peer cache is disposable, never checkpoint authority, and belongs in
+a caller-owned private directory distinct from chain state.
+
+The pool owns at most four sockets, including any pending dial, and bounded idle
+drivers on the caller runtime. Canceling an operation closes its leased stream;
+other connections remain maintained. Explicit `shutdown().await` closes and joins
+drivers; dropping the owner aborts them. Clean-boundary transfer never reuses a
+canceled partial frame. One unresolved P2P resolver job is retained per pool even
+when its wait times out. OS DNS jobs may outlive cancellation and delay runtime
+shutdown; multiple canceled pool instances can overlap them. OS resolver result
+allocation is not bounded by the 32 admitted addresses. See
+[peer management](docs/peer-management.md) for exact control budgets and limits.
+
+There is no library-created runtime, permanent source oracle or body cache.
+Synchronous bounded hashing, validation and durable publication
 between awaits cannot be interrupted. A dedicated caller-owned runtime thread
 can keep that work off latency-sensitive threads.
 

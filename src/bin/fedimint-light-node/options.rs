@@ -133,33 +133,51 @@ pub enum Command {
     },
 }
 
-/// Explicit resolved peers; there is no discovery or P2P DNS in the executable.
+/// Public discovery by default, supplemented or replaced by explicit numeric peers.
 #[derive(Debug, Args)]
 pub struct Network {
-    /// Repeat for 1..16 IPv4:port or [IPv6]:port addresses, visited sequentially.
-    #[arg(long, required = true)]
+    /// Optional IPv4:port or [IPv6]:port peers; repeat up to sixteen times.
+    #[arg(long)]
     pub peer: Vec<SocketAddr>,
+    /// Disable DNS/gossip dialing; use only explicitly configured peers (including private nodes).
+    #[arg(long)]
+    pub manual_only: bool,
     /// Whole exchange deadline in seconds, not an inactivity timeout.
     #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u64).range(1..=60))]
     pub timeout_seconds: u64,
 }
 
 impl Network {
-    /// Construct the bounded, sequential service configuration.
+    /// Construct the bounded foreground service and maintained pool configuration.
     pub fn sync_config(
         &self,
         capacity: u64,
         requests: u64,
         candidates: u64,
         retry_seconds: u64,
+        cache: PathBuf,
     ) -> SyncConfig {
         SyncConfig {
+            peer_pool: {
+                let mut pool = self.pool_config();
+                pool.cache = Some(cache);
+                pool
+            },
             peers: self.peer.clone(),
             handshake_timeout: Duration::from_secs(self.timeout_seconds),
             request_timeout: Duration::from_secs(self.timeout_seconds),
             retry_delay: Duration::from_secs(retry_seconds),
             requests_per_visit: requests as usize,
             candidate_headers: candidates.min(capacity) as usize,
+        }
+    }
+
+    /// Use public discovery by default, with an explicit private/manual-only override.
+    pub fn pool_config(&self) -> fedimint_light_node::peer_pool_config::PeerPoolConfig {
+        if self.manual_only {
+            fedimint_light_node::peer_pool_config::PeerPoolConfig::manual_only()
+        } else {
+            fedimint_light_node::peer_pool_config::PeerPoolConfig::default()
         }
     }
 }
