@@ -60,6 +60,7 @@
             "Cargo.lock"
             "src"
             "tests"
+            "examples"
           ];
         };
         multiBuild = (flakeboxLib.craneMultiBuild { }) (

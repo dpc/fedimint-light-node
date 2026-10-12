@@ -10,5 +10,6 @@ skills before implementation. Run `nix build -L .#ci.tests` and
 When unsure about project or code practices, use `~/lab/tau/tau` as a
 read-only reference.
 
-The node is not implemented yet. Preserve the distinction between intended
-contracts and implemented behavior in status sections when extending it.
+The experimental library and CLI implement bootstrap, header synchronization and
+block retrieval, not guardian integration or full consensus. Preserve the
+distinction between intended contracts and implemented behavior in status sections.

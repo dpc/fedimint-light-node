@@ -28,7 +28,10 @@ independent HTTPS source agreement and bounded P2P ancestry authenticated into t
 checkpoint before atomic publication. Existing stores reopen offline without
 replacing that checkpoint. HTTP transport cancellation has lower-layer DNS and
 connection limits documented in [SECURITY.md](../SECURITY.md); it does not inherit
-the direct P2P socket-lifecycle guarantees. Guardian integration below remains unimplemented.
+the direct P2P socket-lifecycle guarantees. A thin operational executable owns
+runtime and process signals while exposing bootstrap, offline status/protection,
+header visits and body-file export through these APIs. Guardian integration below
+remains unimplemented.
 
 ## Boundaries and flow
 
@@ -39,7 +42,7 @@ process, global singleton, process signal handler, or global mempool is required
 Embedding must not mandate runtime creation, global tracing configuration,
 listening sockets, or process exit.
 Shutdown must stop background work and complete or cancel outstanding requests
-before releasing storage. A future executable or transport remains a thin caller.
+before releasing storage. The executable and any future transport remain thin callers.
 
 Independently operated HTTPS sources establish a trusted bootstrap anchor;
 Bitcoin P2P then supplies ancestry, subsequent headers, and complete

@@ -2,7 +2,9 @@
 
 An embeddable Rust Bitcoin backend for guardians that retain recent headers
 and retrieve complete blocks from peers without full consensus validation.
-This is an incremental implementation, **not a working node or a Bitcoin Core substitute**.
+This experimental implementation can bootstrap mainnet history, synchronize
+headers, and retrieve complete blocks. **It is not a Bitcoin Core substitute,
+a full consensus validator, or a production-ready guardian backend.**
 
 The library provides tested retention-window arithmetic and a synchronous,
 bounded redb header store with versioned bincode records. Callers supply the
@@ -21,9 +23,174 @@ mainnet header validation and bounded canonical selection as described below.
 The `HeaderSync` API retrieves actual mainnet headers and complete matching
 witness-bearing blocks on demand over outbound Bitcoin P2P.
 The `bootstrap` API initializes a fresh store from trusted HTTPS source agreement
-and bounded P2P ancestry. There is no guardian adapter or executable.
+and bounded P2P ancestry. A thin executable exposes these library operations;
+there is no guardian adapter, RPC server, transaction broadcast or fee estimator.
 The intended boundaries are described in
 [ARCH-fedimint-light-node](specs/ARCH-fedimint-light-node.md).
+
+## Operational walkthrough
+
+Build the release executable with `cargo build --release` inside `nix develop`,
+or run `nix build` and use `./result/bin/fedimint-light-node`. `nix run .# -- --help`
+also exposes the packaged executable. The library does not require this process.
+The CLI supports mainnet only, opens no listening socket, and accepts explicit
+resolved peer addresses, not peer hostnames or a discovery service.
+
+Use a private directory on a local filesystem supporting hard links and durable
+directory sync. Replace the example address with a reachable full-history,
+witness-serving Bitcoin peer that you explicitly chose. Repeating `--peer`
+configures up to sixteen sequential peers; peer configuration is not a guarantee
+against eclipse attacks.
+
+```sh
+mkdir -m 700 node-data
+NODE=./result/bin/fedimint-light-node
+DB=./node-data/headers.redb
+PEER=127.0.0.1:8333 # replace with your explicitly chosen peer
+
+# New path only. Default sources: Blockstream and mempool.space, both must agree.
+"$NODE" --db "$DB" bootstrap --peer "$PEER"
+
+# Offline: opens the pinned checkpoint, never repeats bootstrap or creates a DB.
+"$NODE" --db "$DB" status
+
+# One bounded visit, or paced visits until Ctrl-C / SIGTERM.
+"$NODE" --db "$DB" sync --peer "$PEER" --once
+"$NODE" --db "$DB" sync --peer "$PEER"
+```
+
+Status prints the pinned mainnet height-one identity and checkpoint, selected tip
+height/hash and **count = height + 1**, inclusive retained bounds, capacity and
+protection height. It always labels freshness and body availability as unproven:
+an empty peer reply or a stored tip is not a health check. No wallet finality delay
+is subtracted. A retained block can still be unavailable from every configured peer.
+Only one process should own a database at a time: stop sync before running offline
+status, fetch or protect against the same database. redb enforces exclusive opens.
+
+Choose a retained height and its expected hash (for example, copy `selected_height`
+and `selected_hash` from status). Fetch checks that selection before requesting it:
+
+```sh
+HEIGHT=... # retained height from status
+HASH=...   # expected selected hash at that height
+"$NODE" --db "$DB" fetch --peer "$PEER" --height "$HEIGHT" --hash "$HASH" \
+  --output ./node-data/block.raw
+# Only when your consumer deliberately commits to that selected history:
+"$NODE" --db "$DB" protect --height "$HEIGHT" --hash "$HASH"
+```
+
+Fetch writes canonical Bitcoin block serialization, including witness data, not a
+P2P envelope or debug output. Omitting `--hash` uses the currently selected header
+at `--height`. It publishes a complete new file without replacing existing paths,
+including symlinks, hard links and the database itself. Failures before publication
+leave no output; an error after publication may leave a complete file. Inspect it
+rather than retrying with deletion or overwrite. Fetch never automatically protects
+history. Protection is persistent and monotonic; a wrong hash fails, and there is
+no unprotect operation. Applications must coordinate protection with their own
+durable consumer state before promising irreversible results.
+
+All commands accept `--capacity` (1..105,120; default 52,560) and `--cache-mib`
+(1..64; default 8). Capacity must match creation on every reopen; it cannot resize
+an existing database. Example: add `--capacity 2016 --cache-mib 1` to **each**
+invocation for a smaller experimental store. These are logical state and cache
+budgets, not a measured RSS or file-size promise.
+
+Network command help exposes exchange deadlines, pacing and operation-specific
+limits. Defaults are 20-second exchanges, five seconds before each sync/fetch
+connection, four header requests per sync visit, and at most 8,000 candidate
+headers (capped by capacity). Every failure and empty response pays the pacing
+delay. Fetch allows at most sixteen attempts, 120 seconds total, 32 MiB received,
+a 4 MB payload and one million decoded elements; no body cache persists.
+Bootstrap defaults to ten minutes total, 128 header requests and 32 MiB received
+P2P data. These fixed CLI ceilings remain configurable through the library.
+Bootstrap has its own bounded attempt policy and no continuing retry loop.
+
+Bootstrap source overrides replace, rather than augment, the two defaults:
+repeat `--source 'operator=https://host/api'` and set `--quorum` if appropriate.
+At least two distinct operator identities and a strict majority are required;
+any observed disagreement fails closed. Naming two operators does not prove their
+independence. `--confirmation-margin` controls the checkpoint's successor-block
+margin, not guardian finality. Review the [bootstrap trust policy](#initial-trusted-bootstrap)
+and [security boundaries](SECURITY.md) before relying on any source set.
+
+Errors go to stderr and return nonzero. `sync --once` returns failure for a failed
+visit; continuous sync logs retryable peer failures and rotates, but stops on
+terminal local failures. Selected progress can commit before a later failure.
+SIGINT/SIGTERM cancels awaited P2P work and exits 130; sync prints selected state
+after cancellation. Synchronous database, validation and publication work cannot
+be interrupted between awaits. HTTPS OS resolver jobs can outlive cancellation
+and delay runtime shutdown; neither the CLI nor the library promises a hard
+wall-clock shutdown bound. Crashes can leave private staging files. Never delete,
+replace or re-anchor the database automatically on an operational failure.
+
+## Embed without a standalone process
+
+The compiling [`examples/embed.rs`](examples/embed.rs) walkthrough opens a pinned
+store offline, drives one bounded peer visit, fetches a selected block, and returns
+ownership. It owns its Tokio runtime and deadline; there is no library-installed
+signal handler, global logging setup, detached maintenance task or listener.
+Replace its deadline future with your application's cancellation channel or token.
+
+```sh
+cargo run --example embed -- --db ./node-data/headers.redb --peer "$PEER"
+# Explicitly opt into persisting protection for the returned selected block:
+cargo run --example embed -- --db ./node-data/headers.redb --peer "$PEER" --protect
+```
+
+Use `bootstrap(path, config, now).await` only for initial creation, then
+`ValidatedHeaderStore::open_pinned` for restart. `HeaderSync` exclusively owns the
+store across `step` and `fetch_block`; both borrow it mutably so selection cannot
+change during delivery. Cancel by dropping the pending future, then inspect
+`status` because earlier batches may have committed. `protect_through(height, hash)`
+persists a rollback floor before you expose irreversible consumer results;
+`into_store` returns storage ownership. Do not run the next sync visit between
+fetch and a required protection decision.
+
+The example returns typed library errors rather than hiding them behind a retry
+loop. Real integrations should distinguish permanent outside-history requests
+from transient body unavailability, and terminal local errors from retryable peer
+failures. They must also design crash ordering with their own durable state.
+Keep synchronous redb work off latency-sensitive runtime threads when needed.
+Returned block allocations belong to the host; retaining many blocks defeats
+the library's one-download memory bound.
+
+## Resource and failure exercises
+
+These paths support measurement; they do not establish resource guarantees.
+Use a disposable private directory and record capacity, cache, peers, selected
+heights, duration, and build profile alongside results. Never share live production
+database files with a second process.
+
+```sh
+# GNU time reports elapsed time and peak RSS for initial bootstrap.
+/usr/bin/time -v "$NODE" --db ./node-data/measure.redb --capacity 2016 \
+  --cache-mib 1 bootstrap --peer "$PEER"
+du -B1 ./node-data/measure.redb
+du --apparent-size -B1 ./node-data/measure.redb
+
+# Measure bounded header progress separately from startup/HTTP.
+/usr/bin/time -v "$NODE" --db ./node-data/measure.redb --capacity 2016 \
+  --cache-mib 1 sync --peer "$PEER" --once
+
+# Finite unreachable/stalled-peer exercise; replace port if it is in use.
+"$NODE" --db "$DB" sync --peer 127.0.0.1:1 --once \
+  --timeout-seconds 1 --retry-seconds 1
+
+# Deterministic local tests; no public network is used.
+cargo test --test cli
+cargo test --test header_sync --test block_download
+```
+
+On NixOS use `nix shell nixpkgs#time` and `time -v` if `/usr/bin/time` is absent.
+Repeat fetch measurements with **new output filenames**, compare serialized body
+size with peak RSS, then remove only the disposable block files deliberately.
+Interrupt continuous sync and reopen status to check committed progress. Try an
+out-of-range fetch, wrong protection hash, existing bootstrap path and existing
+fetch output; each should fail without recovery or overwrite. Library tests also
+exercise loopback stalls, invalid frames, cancellation and deadline exhaustion.
+Longer steady-state runs, physical database growth under pruning, real peer
+availability, HTTPS resolver behavior and guardian crash integration still require
+operational measurement; no production readiness is claimed.
 
 ## Development
 

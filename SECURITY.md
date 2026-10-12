@@ -45,3 +45,17 @@ There is no library-created runtime, maintenance task, permanent source oracle
 or body cache. Synchronous bounded hashing, validation and durable publication
 between awaits cannot be interrupted. A dedicated caller-owned runtime thread
 can keep that work off latency-sensitive threads.
+
+## Executable boundary
+
+The optional CLI owns a current-thread Tokio runtime and SIGINT/SIGTERM handling;
+none is installed by the library. Signal cancellation cannot interrupt synchronous
+database work, block serialization or publication, and default runtime teardown
+can wait for HTTPS resolver jobs. This is not a hard shutdown-time guarantee.
+
+Block-file export uses private sibling staging and atomic no-overwrite publication.
+Existing entries, including aliases of the database, are refused. As with database
+publication, the caller must own the parent directory and inspect an output after
+a publication error rather than automatically deleting it. Status reports selected
+state, never proven freshness, consensus validity or body availability. Protection
+is an explicit irreversible rollback-floor choice, not a consensus finality claim.
