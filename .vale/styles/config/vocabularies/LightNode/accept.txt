@@ -60,3 +60,17 @@ async
 Nakamoto
 Nakamoto's
 BIPs
+chainstates?
+Floresta
+Floresta's
+utreexod
+Utreexo
+validators
+hardcoded
+Electrum's
+embedders
+README's
+interoperate
+benchmarked
+microbenchmarks
+boolean

@@ -37,6 +37,28 @@ There is **no full consensus validation, UTXO set, wallet-history service, inbou
 listener or Fedimint guardian adapter**. This is not yet a production-ready
 guardian backend or a substitute for Bitcoin Core's validation.
 
+## How does this compare?
+
+The main difference is **what gets validated**, not just how much state is kept:
+
+| Approach | Validation and tradeoff |
+|---|---|
+| **This project** | Trusted checkpoint, contextual descendant headers and complete-block integrity; bounded recent state, but no UTXO or script validation. |
+| **Pruned Bitcoin Core** | Full-node validation with old bodies discarded; retains chainstate and processes history. AssumeUTXO can make it usable earlier while historical validation runs in the background. |
+| **Kyoto / Neutrino** | Compact-filter light clients: header and inclusion checks, not full spend validation. Filters help skip irrelevant blocks, not blocks a guardian must consume in full. |
+| **Electrum / Esplora clients** | Indexed server queries, with proofs available depending on the protocol and client; availability and completeness still depend on the backend. Self-hosting moves that backend cost to the operator. |
+| **Floresta / utreexod** | Utreexo validators use authenticated UTXO proofs instead of a full local UTXO database. Validation work, proof availability and bootstrap configuration still matter. |
+
+**Pruned Core is the full-validation baseline. Floresta is a promising research
+alternative** because its Rust components aim to reduce validation state rather
+than omit spend validation. We have not adopted it or established guardian
+compatibility. Finality delays and federation consensus do not supply the
+validation missing from our current node.
+
+See the [detailed comparison](docs/alternative-approaches.md) for primary sources
+checked on October 12, 2026, configuration caveats and resource tradeoffs. This
+is not a measured performance ranking.
+
 ## Try it
 
 With Nix installed:
