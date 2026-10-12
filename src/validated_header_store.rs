@@ -13,7 +13,7 @@ use crate::store_error::StoreError;
 
 /// Mainnet contextual admission with atomic bounded canonical chain selection.
 ///
-/// Each retained header has a fixed-size validation checkpoint, so even a
+/// Each retained header at or above the trust anchor has a fixed-size checkpoint, so even a
 /// one-header rolling window can validate its next retarget after restart.
 /// Forks may start at any retained, unprotected parent at or above the anchor.
 /// Candidates are bounded by header capacity and selected only by strictly greater
@@ -33,6 +33,73 @@ pub struct ValidatedHeaderStore {
 }
 
 impl ValidatedHeaderStore {
+    /// Reopen the locally pinned mainnet store without HTTP or replacing its anchor.
+    ///
+    /// Local disk is trusted against malicious replacement. Call `open` instead
+    /// when an independently recorded anchor must also match.
+    pub fn open_pinned(path: impl AsRef<Path>, config: StoreConfig) -> Result<Self, HeaderError> {
+        Ok(Self {
+            store: HeaderStore::open_pinned(path.as_ref(), config)?,
+        })
+    }
+
+    /// Authenticate and atomically publish a bounded pre-checkpoint header window.
+    ///
+    /// `history` starts at the lesser of the retained floor and checkpoint context
+    /// start, and ends at the trusted checkpoint. Historical rows are authenticated,
+    /// not independently context-validated, and cannot be fork parents. They carry
+    /// no invented work. Only descendants accrue relative work.
+    ///
+    /// A private sibling directory holds preparation. A same-filesystem hard link
+    /// publishes the complete database without overwriting any destination. A crash
+    /// may leave private temporary files, but never a partially initialized public
+    /// store. Directory-sync failure after publication returns an error even though
+    /// a complete store exists; inspect/reopen it, never automatically replace it.
+    pub fn create_with_history(
+        path: impl AsRef<Path>,
+        config: StoreConfig,
+        anchor: StoreAnchor,
+        history: &[Header],
+    ) -> Result<Self, HeaderError> {
+        if config.header_capacity.get() > 105_120 {
+            return Err(
+                StoreError::InvalidUpdate("bootstrap header capacity exceeds limit").into(),
+            );
+        }
+        let first = anchor
+            .height
+            .saturating_sub(config.header_capacity.get() - 1);
+        let start = first.min(HeaderContext::context_start(anchor.height));
+        if history.len() as u64 != anchor.height - start + 1 {
+            return Err(HeaderError::MissingContext);
+        }
+        for pair in history.windows(2) {
+            if pair[1].prev_blockhash != pair[0].block_hash() {
+                return Err(HeaderError::Linkage);
+            }
+        }
+        let path = path.as_ref();
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let temporary = tempfile::Builder::new()
+            .prefix(".bootstrap-")
+            .tempdir_in(parent)
+            .map_err(StoreError::from)?;
+        let private = temporary.path().join("headers.redb");
+        let context_offset = (HeaderContext::context_start(anchor.height) - start) as usize;
+        let mut result = Self::create(&private, config, anchor, &history[context_offset..])?;
+        result
+            .store
+            .insert_history(first, &history[(first - start) as usize..])?;
+        std::fs::hard_link(&private, path).map_err(StoreError::from)?;
+        std::fs::File::open(parent)
+            .and_then(|file| file.sync_all())
+            .map_err(StoreError::from)?;
+        Ok(result)
+    }
+
     /// Create mainnet state from caller-trusted, hash-linked historical context.
     ///
     /// The history has the exact range required by `HeaderContext::context_start`.
@@ -89,6 +156,9 @@ impl ValidatedHeaderStore {
     }
 
     /// Read a selected header, without implying full consensus validity.
+    ///
+    /// Heights at or below `anchor().height` are trusted, hash-authenticated
+    /// ancestry. Only later heights passed independent contextual admission.
     pub fn header(&self, height: u64) -> Result<Header, StoreError> {
         self.store.header(height)
     }
@@ -108,6 +178,8 @@ impl ValidatedHeaderStore {
     /// Call before promising that height as finalized to a consumer. Lowering the
     /// floor, replacing protected history, and automatic re-anchoring are forbidden.
     /// Header pruning does not remove this protection.
+    /// Retained heights already at or below `protected_height()` need no update;
+    /// attempting to lower the floor returns an error, even for trusted ancestry.
     pub fn protect_through(&mut self, height: u64, hash: BlockHash) -> Result<(), StoreError> {
         self.store.protect(height, hash)
     }

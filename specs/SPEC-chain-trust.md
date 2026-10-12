@@ -21,8 +21,12 @@ and cannot open validated state. Outbound mainnet synchronization applies that
 validator to bounded peer candidates and exposes selected-tip changes, including
 progress committed before a later peer failure or cancellation. Unsupported remote
 candidates end that peer visit without replacing protected history or stopping
-other peers; local storage failures stop synchronization. Bootstrap source
-authentication remains unimplemented. On-demand body delivery binds the requested
+other peers; local storage failures stop synchronization. Fresh-store bootstrap
+authenticates HTTPS endpoints and requires same-height agreement, with explicit
+source-trust and resource policy. P2P backfill becomes queryable only after exact
+linkage into that checkpoint; pre-checkpoint rows carry no independently validated
+work or fork context. Atomic publication refuses overwrite, and restart uses the
+persisted checkpoint without an oracle. On-demand body delivery binds the requested
 height/hash to retained selected state and derives mainnet witness activation from
 that height. Exclusive ownership prevents pruning or reorganization during retrieval;
 after delivery, subsequent synchronization can change unprotected selection.
@@ -39,9 +43,14 @@ own the contract coherently.
 
 Bootstrap accepts a network, height, and hash only after independently operated
 HTTPS sources agree at the same height. Reputation alone does not establish
-independence. Exact quorum and confirmation margin are unresolved policy,
-not hard-coded assumptions. Persist that tuple and authenticate backfilled
+independence. Quorum and confirmation margin are explicit configurable policy;
+agreement and a timestamp freshness check do not establish consensus or an
+objectively current tip. Persist that tuple and authenticate backfilled
 ancestry by hash linkage into it before exposing retained history.
+The trusted checkpoint, work origin and rollback boundary remain distinct from
+the rolling retained floor. Authenticated historical rows below that checkpoint
+may serve matching bodies but cannot become contextual fork parents. Only
+descendants earn independently validated relative work.
 
 Subsequent headers require linkage, valid target encoding and limits, PoW,
 the network's expected difficulty including retarget rules, median-time-past

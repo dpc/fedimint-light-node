@@ -49,6 +49,17 @@ pub(crate) struct Metadata {
 }
 
 impl Metadata {
+    /// Recover the persisted identity for an explicitly offline validated reopen.
+    pub(crate) fn anchor(&self) -> Result<StoreAnchor, StoreError> {
+        let network = bitcoin::Network::from_magic(bitcoin::p2p::Magic::from_bytes(self.network))
+            .ok_or(StoreError::Corrupt("unknown network"))?;
+        Ok(StoreAnchor {
+            network,
+            height_one_hash: bitcoin::BlockHash::from_byte_array(self.height_one_hash),
+            height: self.anchor_height,
+            hash: bitcoin::BlockHash::from_byte_array(self.anchor_hash),
+        })
+    }
     /// Build the initial metadata for a store containing just its anchor.
     pub(crate) fn new(anchor: StoreAnchor, capacity: u64) -> Self {
         Self {

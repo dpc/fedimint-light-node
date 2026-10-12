@@ -42,6 +42,57 @@ pub struct HeaderStore {
 }
 
 impl HeaderStore {
+    /// Read the pinned identity from local disk, never from a bootstrap oracle.
+    pub(crate) fn open_pinned(path: &Path, config: StoreConfig) -> Result<Self, StoreError> {
+        let database = Database::builder()
+            .set_cache_size(config.cache_bytes.get())
+            .open(path)?;
+        let anchor = {
+            let read = database.begin_read()?;
+            read_metadata(&read.open_table(META)?)?.anchor()?
+        };
+        if anchor.network != bitcoin::Network::Bitcoin {
+            return Err(StoreError::ConfigurationMismatch);
+        }
+        let store = Self {
+            database,
+            config,
+            anchor,
+            validated: true,
+        };
+        store.check_consistency()?;
+        Ok(store)
+    }
+
+    /// Add already authenticated history while the database is still private.
+    pub(crate) fn insert_history(
+        &mut self,
+        first: u64,
+        history: &[Header],
+    ) -> Result<(), StoreError> {
+        if !self.validated
+            || first > self.anchor.height
+            || history.len() as u64 != self.anchor.height - first + 1
+            || history.len() as u64 > self.capacity()
+        {
+            return Err(StoreError::InvalidUpdate("invalid bootstrap history range"));
+        }
+        let mut write = self.database.begin_write()?;
+        write.set_durability(redb::Durability::Immediate)?;
+        {
+            let mut headers = write.open_table(HEADERS)?;
+            let mut table = write.open_table(META)?;
+            let mut metadata = read_metadata(&table)?;
+            for (offset, header) in history.iter().enumerate() {
+                headers.insert(first + offset as u64, encode_header(header).as_slice())?;
+            }
+            metadata.first = first;
+            table.insert(0, metadata.encode().as_slice())?;
+        }
+        write.commit()?;
+        self.check_consistency()
+    }
+
     /// Create a new store containing only the supplied anchor header.
     ///
     /// Existing files are never overwritten. Failed creation may leave a file;
@@ -312,7 +363,10 @@ impl HeaderStore {
         if metadata.protected < self.anchor.height || metadata.protected > metadata.tip {
             return Err(StoreError::Corrupt("invalid protected height"));
         }
-        if metadata.first < metadata.anchor_height || metadata.tip < metadata.first {
+        if (!self.validated && metadata.first < metadata.anchor_height)
+            || metadata.tip < metadata.first
+            || metadata.tip < metadata.anchor_height
+        {
             return Err(StoreError::Corrupt("invalid height bounds"));
         }
         let count = metadata
@@ -322,7 +376,12 @@ impl HeaderStore {
             .ok_or(StoreError::Corrupt("height span overflow"))?;
         let headers = read.open_table(HEADERS)?;
         let contexts = read.open_table(CONTEXTS)?;
-        if contexts.len()? != if self.validated { count } else { 0 } {
+        let context_count = if self.validated {
+            metadata.tip - metadata.first.max(metadata.anchor_height) + 1
+        } else {
+            0
+        };
+        if contexts.len()? != context_count {
             return Err(StoreError::Corrupt("invalid context count"));
         }
         if count > metadata.capacity || headers.len()? != count {
@@ -339,7 +398,7 @@ impl HeaderStore {
             }
             let header = decode_header(bytes.value())?;
             let hash = header.block_hash();
-            if self.validated {
+            if self.validated && height >= self.anchor.height {
                 let bytes = contexts
                     .get(height)?
                     .ok_or(StoreError::Corrupt("missing context"))?;

@@ -13,7 +13,8 @@ and aggregate element budgets with an allocation-free structural pass before
 decoding. Fixed-size v1 block-header admission bounds declared payload bytes
 before caller buffering; transport buffers and concurrency remain caller-owned.
 Validated mainnet storage keeps one fixed-size validation checkpoint per retained
-header, including retarget and median-time context, plus a pinned protection floor.
+header at or above the trust anchor, including retarget and median-time context,
+plus a pinned protection floor.
 Candidate suffixes are bounded by header capacity; no alternative branch pool exists.
 Header synchronization bounds configured peers, sequential visits, message counts,
 wire bytes, deadlines and candidate state globally per service, not per connection.
@@ -22,7 +23,11 @@ strings pass structural preflight before variable decoding; unsolicited bodies a
 rejected before payload reads. On-demand body retrieval shares that exclusive owner:
 one socket, payload and decoder, no queues or persistent body cache. Attempts,
 aggregate received bytes, payload/element budgets and absolute visit/total deadlines
-bound each request across peers. Dropping the future releases owned resources;
+bound each request across peers. Fresh bootstrap caps HTTPS sources, requests,
+reply bodies, deadlines, peers, global P2P bytes and header requests. Its staged
+history is bounded by retention capacity plus necessary checkpoint context;
+publication exposes only the authenticated recent window. Historical rows below
+the trust checkpoint carry no per-header validation context. Dropping the future releases owned resources;
 bounded synchronous decoding between awaits cannot be interrupted. Returned blocks
 belong to the caller. Only full-history, witness-serving peers qualify, even near
 the local tip; neither selected nor advertised height proves a limited peer's range.
@@ -33,7 +38,7 @@ incomplete.
 ## Obligation
 
 The requester wants recent headers rather than an archival node; approximately
-one year is an example, not a fixed duration or a chosen default. Configuration
+one year is an example, not a requester-mandated duration or default. Configuration
 must specify a finite header capacity. Retention advances with the selected chain,
 not with the slowest consumer. Very old guardians must use another backend.
 

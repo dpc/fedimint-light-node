@@ -3,16 +3,20 @@
 //! This library implements retention-window arithmetic and a bounded persistent
 //! header store, bounded v1 block frames and decoding, stateless integrity checks,
 //! declared-target PoW checks, and separate contextual mainnet header admission
-//! with relative-work selection and persistent bounded context. No API establishes
-//! full consensus validity or bootstrap authenticity. Bounded outbound mainnet
-//! header synchronization and on-demand witness-bearing block retrieval require
-//! caller-trusted initial state; bootstrap authentication and guardian integration
-//! are not implemented.
+//! with relative-work selection and persistent bounded context. Initial HTTPS
+//! source agreement establishes an explicitly trusted mainnet checkpoint and P2P
+//! authenticates bounded recent ancestry into it. No API establishes full consensus
+//! validity or objective freshness. Outbound mainnet header synchronization and
+//! on-demand witness-bearing block retrieval continue without those sources.
+//! Guardian integration is not implemented.
 
 pub mod block_decode;
 pub mod block_download_config;
 pub mod block_download_error;
 pub mod block_integrity;
+pub mod bootstrap;
+pub mod bootstrap_config;
+pub mod bootstrap_error;
 pub mod declared_pow;
 pub mod decode_error;
 pub mod frame_error;
@@ -31,6 +35,8 @@ pub mod v1_block_frame;
 pub mod validated_header_store;
 
 mod block_download;
+mod bootstrap_history;
+mod bootstrap_http;
 mod encoded_size_limit;
 mod header_wire;
 mod peer_handshake;

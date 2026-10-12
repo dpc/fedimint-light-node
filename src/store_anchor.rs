@@ -11,7 +11,7 @@ pub struct StoreAnchor {
     pub network: Network,
     /// Caller-authenticated height-one hash used as chain identity.
     pub height_one_hash: BlockHash,
-    /// Height of the initial header; this slice does not backfill older headers.
+    /// Immutable trust checkpoint height, distinct from the rolling retained floor.
     pub height: u64,
     /// Hash of the initial header.
     pub hash: BlockHash,

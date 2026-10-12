@@ -2,6 +2,7 @@
 
 This project uses the Linked Specs convention; consult the `linked-specs`
 skill before working with specs or governed code.
+Read `SECURITY.md` before changing networking, persistence, or trust boundaries.
 
 Load dpc's Rust project, code-style, crate-preference, and Jujutsu workflow
 skills before implementation. Run `nix build -L .#ci.tests` and

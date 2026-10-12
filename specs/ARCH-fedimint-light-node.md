@@ -6,7 +6,7 @@ This is the requested target architecture for incremental implementation.
 The Rust library implements retention-range arithmetic and a synchronous redb
 store with versioned bincode anchor, identity and canonical-header records.
 Atomic suffix updates and pruning preserve coherent bounds across restart.
-The caller supplies all trust decisions and resource capacities; storage checks
+The caller controls trust decisions and resource capacities; storage checks
 structure, not consensus. Separate stateless functions check decoded block integrity
 and declared-target PoW, using caller-supplied hash, witness activation and target
 limit rather than authenticated chain context. Complete payload admission bounds
@@ -14,7 +14,7 @@ wire bytes and decoded structure before allocating and checking bodies.
 A bounded v1 block-envelope boundary checks caller network, command, length and
 checksum before that payload admission; it owns no transport or peer lifecycle.
 A separate mainnet validator and validated-store boundary admit descendants and
-select bounded suffixes by relative work. Fixed-size context per retained header
+select bounded suffixes by relative work. Fixed-size context per retained descendant
 survives pruning and restart; an explicit caller protection floor prevents rollback
 through consumed history. Raw storage remains untrusted and cannot open validated
 stores. Caller-driven outbound mainnet header synchronization uses one bounded
@@ -23,8 +23,12 @@ Dropping a visit cancels its network work; already committed progress remains
 observable. The same exclusive owner retrieves retained canonical blocks on demand
 with witness-aware requests and bounded decoding. Header selection and pruning
 cannot overlap delivery; later visits may still change unprotected selection.
-It owns no runtime, detached tasks or body cache. Bootstrap and guardian integration
-below remain unimplemented.
+It owns no runtime, detached tasks or body cache. Fresh-store bootstrap uses
+independent HTTPS source agreement and bounded P2P ancestry authenticated into the
+checkpoint before atomic publication. Existing stores reopen offline without
+replacing that checkpoint. HTTP transport cancellation has lower-layer DNS and
+connection limits documented in [SECURITY.md](../SECURITY.md); it does not inherit
+the direct P2P socket-lifecycle guarantees. Guardian integration below remains unimplemented.
 
 ## Boundaries and flow
 
