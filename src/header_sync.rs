@@ -1,18 +1,19 @@
-use std::net::{Ipv4Addr, SocketAddr};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::net::SocketAddr;
 
 use bitcoin::hashes::Hash;
-use bitcoin::p2p::ServiceFlags;
-use bitcoin::p2p::address::Address;
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::p2p::message_blockdata::GetHeadersMessage;
-use bitcoin::p2p::message_network::VersionMessage;
-use bitcoin::{BlockHash, block::Header};
+use bitcoin::{Block, BlockHash, Target, block::Header};
 use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 
+use crate::block_download::download;
+use crate::block_download_config::BlockDownloadConfig;
+use crate::block_download_error::BlockDownloadError;
+use crate::declared_pow::check_declared_pow;
 use crate::header_error::HeaderError;
 use crate::header_wire::{Message, receive, send};
+use crate::peer_handshake::handshake;
 use crate::store_error::StoreError;
 use crate::sync_config::SyncConfig;
 use crate::sync_error::SyncError;
@@ -22,7 +23,7 @@ use crate::validated_header_store::ValidatedHeaderStore;
 ///
 /// Each `step` visits one configured peer; repeated calls provide paced, fair
 /// round-robin synchronization. There is no background task, listener, discovery,
-/// runtime creation, body request, or global configuration. A caller must supply
+/// runtime creation, or global configuration. A caller must supply
 /// a Tokio runtime with I/O and time enabled. One global socket and candidate
 /// avoid multiplicative per-peer budgets; sequential peers trade throughput and
 /// availability for a small auditable lifecycle, not production eclipse resistance.
@@ -127,6 +128,91 @@ impl HeaderSync {
     /// Return storage ownership; no network work or background tasks remain.
     pub fn into_store(self) -> ValidatedHeaderStore {
         self.store
+    }
+
+    /// Retrieve a complete witness-bearing block matching a retained selected hash.
+    ///
+    /// The exclusive borrow prevents header selection, pruning, protection changes,
+    /// and concurrent downloads until this call returns or is dropped. No database
+    /// transaction crosses an await. Thus the hash remains canonical at delivery,
+    /// without a stale-selection race. It can change on a later `step`: this method
+    /// does not promise finality or automatically raise the consumer protection floor.
+    /// Call `protect_through` before promising finality to consumers.
+    ///
+    /// The compiler prevents a concurrent reorganization or second download:
+    /// ```compile_fail
+    /// # use fedimint_light_node::{header_sync::HeaderSync, block_download_config::BlockDownloadConfig};
+    /// # async fn example(node: &mut HeaderSync, config: BlockDownloadConfig) {
+    /// let tip = node.status().unwrap();
+    /// let pending = node.fetch_block(tip.height, tip.hash, config);
+    /// node.step(2_000_000_000).await;
+    /// pending.await.unwrap();
+    /// # }
+    /// ```
+    ///
+    /// One socket, payload and decoder are shared globally per service, not per
+    /// peer. There is no body cache, pipeline, queue or detached task. Dropping the
+    /// future immediately releases network/buffer ownership; synchronous bounded
+    /// decode/checking between awaits cannot be interrupted. Returned blocks are
+    /// caller-owned and excluded from the library budget. No store writes occur.
+    ///
+    /// Each call tries at most one visit per configured peer entry with pacing and absolute
+    /// visit/total deadlines. Only NODE_NETWORK + NODE_WITNESS peers qualify:
+    /// limited-only peers promise their own recent 288 blocks, and neither our tip
+    /// nor their advertised height proves that our request is in that range.
+    /// Unavailability is not evidence of stale headers or invalid chain selection.
+    ///
+    /// Mainnet witness activation follows retained height, not untrusted body data.
+    /// Declared PoW is checked even for the caller-trusted anchor; descendants were
+    /// already contextually admitted. Body checks are mechanical, not full consensus.
+    pub async fn fetch_block(
+        &mut self,
+        height: u64,
+        hash: BlockHash,
+        config: BlockDownloadConfig,
+    ) -> Result<Block, BlockDownloadError> {
+        if !config.validate() {
+            return Err(BlockDownloadError::Configuration);
+        }
+        if self.stopped {
+            return Err(BlockDownloadError::Stopped);
+        }
+        let header = match self.store.header(height) {
+            Ok(header) => header,
+            Err(StoreError::OutsideRetainedHistory) => {
+                return Err(BlockDownloadError::OutsideRetainedHistory);
+            }
+            Err(StoreError::BeyondTip) => return Err(BlockDownloadError::BeyondTip),
+            Err(error) => {
+                self.stopped = true;
+                return Err(error.into());
+            }
+        };
+        if header.block_hash() != hash {
+            return Err(BlockDownloadError::NotCanonical);
+        }
+        if let Err(error) = check_declared_pow(&header, Target::MAX_ATTAINABLE_MAINNET) {
+            self.stopped = true;
+            return Err(error.into());
+        }
+        let tip_height = self
+            .store
+            .bounds()
+            .map_err(|error| {
+                self.stopped = true;
+                BlockDownloadError::Store(error)
+            })?
+            .1;
+        download(
+            &self.config.peers,
+            &mut self.next_peer,
+            self.config.retry_delay,
+            tip_height,
+            height,
+            hash,
+            config,
+        )
+        .await
     }
 
     /// Visit one peer with absolute exchange deadlines and bounded work.
@@ -249,45 +335,9 @@ impl HeaderSync {
     }
 
     async fn handshake(&self, peer: SocketAddr) -> Result<TcpStream, SyncError> {
-        let mut stream = TcpStream::connect(peer).await?;
-        let mut version = VersionMessage::new(
-            ServiceFlags::NONE,
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64,
-            Address::new(&peer, ServiceFlags::NONE),
-            Address::new(
-                &SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)),
-                ServiceFlags::NONE,
-            ),
-            0, // No listener: no self-connection detection is needed.
-            "/fedimint-light-node:0.1/".into(),
-            self.store.bounds()?.1.min(i32::MAX as u64) as i32,
-        );
-        version.relay = false;
-        send(&mut stream, NetworkMessage::Version(version)).await?;
-        let mut got_version = false;
-        let mut bytes = 2_000_000;
-        for _ in 0..32 {
-            match receive(&mut stream, &mut bytes).await? {
-                Message::Version(version) if !got_version => {
-                    if version.version < 70001
-                        || !(version.services.has(ServiceFlags::NETWORK)
-                            || version.services.has(ServiceFlags::NETWORK_LIMITED))
-                    {
-                        return Err(SyncError::Protocol("unsupported peer version or services"));
-                    }
-                    got_version = true;
-                    send(&mut stream, NetworkMessage::Verack).await?;
-                }
-                Message::Verack if got_version => return Ok(stream),
-                Message::Ping(nonce) => send(&mut stream, NetworkMessage::Pong(nonce)).await?,
-                Message::Ignore => {}
-                _ => return Err(SyncError::Protocol("unexpected handshake message")),
-            }
-        }
-        Err(SyncError::Protocol("handshake message budget"))
+        Ok(handshake(peer, self.store.bounds()?.1, &mut 2_000_000)
+            .await?
+            .0)
     }
 }
 

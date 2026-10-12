@@ -20,8 +20,11 @@ through consumed history. Raw storage remains untrusted and cannot open validate
 stores. Caller-driven outbound mainnet header synchronization uses one bounded
 peer session at a time, configured addresses, deadlines and contextual admission.
 Dropping a visit cancels its network work; already committed progress remains
-observable. It owns no runtime or detached tasks. Bootstrap, body retrieval and
-guardian integration below remain unimplemented.
+observable. The same exclusive owner retrieves retained canonical blocks on demand
+with witness-aware requests and bounded decoding. Header selection and pruning
+cannot overlap delivery; later visits may still change unprotected selection.
+It owns no runtime, detached tasks or body cache. Bootstrap and guardian integration
+below remain unimplemented.
 
 ## Boundaries and flow
 

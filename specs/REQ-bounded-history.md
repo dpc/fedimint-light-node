@@ -19,7 +19,13 @@ Header synchronization bounds configured peers, sequential visits, message count
 wire bytes, deadlines and candidate state globally per service, not per connection.
 It has one socket and no task or event queues. Protocol header counts and version
 strings pass structural preflight before variable decoding; unsolicited bodies are
-rejected before payload reads. Body retrieval and its global budgets remain unimplemented.
+rejected before payload reads. On-demand body retrieval shares that exclusive owner:
+one socket, payload and decoder, no queues or persistent body cache. Attempts,
+aggregate received bytes, payload/element budgets and absolute visit/total deadlines
+bound each request across peers. Dropping the future releases owned resources;
+bounded synchronous decoding between awaits cannot be interrupted. Returned blocks
+belong to the caller. Only full-history, witness-serving peers qualify, even near
+the local tip; neither selected nor advertised height proves a limited peer's range.
 Logical record bounds do not establish
 physical file-size or process-memory guarantees; resource accounting remains
 incomplete.

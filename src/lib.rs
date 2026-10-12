@@ -5,10 +5,13 @@
 //! declared-target PoW checks, and separate contextual mainnet header admission
 //! with relative-work selection and persistent bounded context. No API establishes
 //! full consensus validity or bootstrap authenticity. Bounded outbound mainnet
-//! header synchronization requires caller-trusted initial state; body retrieval,
-//! bootstrap authentication and guardian integration are not implemented.
+//! header synchronization and on-demand witness-bearing block retrieval require
+//! caller-trusted initial state; bootstrap authentication and guardian integration
+//! are not implemented.
 
 pub mod block_decode;
+pub mod block_download_config;
+pub mod block_download_error;
 pub mod block_integrity;
 pub mod declared_pow;
 pub mod decode_error;
@@ -27,6 +30,8 @@ pub mod sync_error;
 pub mod v1_block_frame;
 pub mod validated_header_store;
 
+mod block_download;
 mod encoded_size_limit;
 mod header_wire;
+mod peer_handshake;
 mod store_format;

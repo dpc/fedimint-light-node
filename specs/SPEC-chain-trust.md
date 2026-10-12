@@ -7,7 +7,7 @@ Merkle mutation/duplicates, witness commitments and size/weight limits. Witness
 activation is explicit caller context, not inferred or authenticated. Separate
 declared-target PoW checks enforce target range and a caller-supplied limit, not
 expected difficulty. Complete payload admission implements bounded canonical wire
-decoding followed by these body checks; body delivery remains unimplemented.
+decoding followed by these body checks.
 The v1 block-envelope boundary checks network magic and checksum, neither of
 which authenticates a peer, requested hash or activation context.
 No full consensus validation is provided. Mainnet contextual header validation
@@ -22,7 +22,12 @@ validator to bounded peer candidates and exposes selected-tip changes, including
 progress committed before a later peer failure or cancellation. Unsupported remote
 candidates end that peer visit without replacing protected history or stopping
 other peers; local storage failures stop synchronization. Bootstrap source
-authentication and body delivery remain unimplemented.
+authentication remains unimplemented. On-demand body delivery binds the requested
+height/hash to retained selected state and derives mainnet witness activation from
+that height. Exclusive ownership prevents pruning or reorganization during retrieval;
+after delivery, subsequent synchronization can change unprotected selection.
+Body failure does not alter headers or establish freshness. Guardian consumption
+and finality integration remain unimplemented.
 
 ## Record justification
 

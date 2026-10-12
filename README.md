@@ -18,8 +18,9 @@ a caller-supplied network limit, **not expected difficulty or header validity**.
 Neither integrity API authenticates the requested hash or establishes consensus acceptance.
 The separate `HeaderContext` and `ValidatedHeaderStore` APIs implement contextual
 mainnet header validation and bounded canonical selection as described below.
-The `HeaderSync` API retrieves actual mainnet headers over outbound Bitcoin P2P.
-There is no body retrieval, complete validation pipeline, guardian adapter, or executable.
+The `HeaderSync` API retrieves actual mainnet headers and complete matching
+witness-bearing blocks on demand over outbound Bitcoin P2P.
+There is no bootstrap authenticator, guardian adapter, or executable.
 The intended boundaries are described in
 [ARCH-fedimint-light-node](specs/ARCH-fedimint-light-node.md).
 
@@ -126,7 +127,55 @@ zero transaction counts and version user-agent lengths are checked before variab
 decoding. This avoids adding a general P2P framework for a single outbound flow.
 Only a bounded set of handshake and ordinary control/announcement messages is
 accepted. There is no peer discovery, inbound service, BIP324 transport, parallel
-peer diversity, transaction relay, body request, or production-readiness claim.
+peer diversity, transaction relay, or production-readiness claim.
+
+## On-demand blocks
+
+Call `HeaderSync::fetch_block(height, hash, config)` for a retained selected header.
+The method checks the height/hash before connecting and applies mainnet witness
+rules at height 481,824, then binds the complete body to that hash. It uses the
+existing bounded decoder, Merkle/witness commitments and mechanical integrity
+checks, not full consensus validation. No bodies persist or remain cached.
+
+The method exclusively borrows the same service used for header synchronization:
+one socket, payload and decoder globally per instance, no concurrent header
+selection, pruning or downloads. No database transaction crosses an await.
+Selection is still canonical when the method returns, but a later `step` may
+replace unprotected history. Retrieval does not automatically protect consumed
+history; call `protect_through` before promising finality.
+
+`BlockDownloadConfig` explicitly bounds attempts (at most 16 and no more than one
+per configured peer entry), total duration (at most 120 seconds), each complete visit
+(at most 60 seconds), aggregate received bytes across all attempts (at most 64 MB),
+payload bytes (at most 4 MB), and decoded elements (at most one million).
+Both deadlines include control messages and fragmented reads; total duration also
+includes retry pacing. Handshake and response each admit at most 32 messages.
+Malformed/partial envelopes count against the byte budget; admitted payloads reserve
+their entire declared length before reading. Each visit makes one witness-aware
+`getdata` request. The payload and decoded result briefly coexist, and integrity
+scratch space scales with the admitted structure; these are not exact RSS limits.
+Caller-owned returned blocks and caller-created service instances need separate
+accounting.
+
+Only peers advertising both `NODE_NETWORK` and `NODE_WITNESS` qualify. BIP159
+limited-only peers guarantee their own last 288 blocks, not our retained window.
+Even our locally recent tip may be stale, so this implementation conservatively
+requires full-serving peers for every body. Advertised height is never evidence
+of freshness or availability. BIP144 witness requests still use the header hash
+and receive ordinary `block` messages, including for legacy blocks.
+
+`OutsideRetainedHistory`, `BeyondTip`, and `NotCanonical` are distinct from
+transient `Unavailable`, which reports attempts and the last peer/budget failure.
+Bad hashes, checksums, malformed bodies, witness failures, `notfound`, withholding
+and unsuitable peers end that visit and permit bounded retries with other peers.
+Any `notfound` ends the visit without interpreting its inventory; it cannot invalidate headers.
+Local state failures stop the service. No archival recovery or fallback occurs.
+
+Drop the future to cancel: the socket, payload and exclusive download slot release
+without store writes or leaked tasks. Synchronous bounded decoding cannot be
+preempted; the service rechecks its deadline after decoding and refuses late
+success. Use a caller-owned dedicated runtime thread if that latency is unacceptable.
+Availability is not a chain freshness, finality or consensus-security claim.
 
 ## Integrity boundary
 
@@ -138,8 +187,8 @@ scans complete payloads without allocation, enforcing explicit byte and aggregat
 element budgets and rejecting malformed lengths, encodings that are not canonical,
 truncation and trailing bytes. It then uses `rust-bitcoin` decoding and the same
 integrity checks. Structural budgets bound decoded storage growth, not exact
-allocator bytes or RSS. Global download limits and process memory accounting
-remain unimplemented. A body rejection must not poison the
+allocator bytes or RSS. The service above supplies global download limits;
+process memory accounting remains incomplete. A body rejection must not poison the
 requested header or prevent retrying a different body.
 
 The `v1_block_frame` boundary admits only Bitcoin v1 `block` envelopes. Callers

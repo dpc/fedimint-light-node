@@ -1,6 +1,6 @@
 //! Narrow v1 transport: rust-bitcoin encodes outgoing messages and fixed headers.
 //! The broad RawNetworkMessage decoder is deliberately not used on hostile input:
-//! count/length preflight precedes all variable allocation. No body commands pass.
+//! count/length preflight precedes all variable allocation. Bodies require opt-in.
 
 use bitcoin::Network;
 use bitcoin::block::Header;
@@ -11,7 +11,9 @@ use bitcoin::p2p::message_network::VersionMessage;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
+use crate::block_decode::BlockDecodeLimits;
 use crate::sync_error::SyncError;
+use crate::v1_block_frame::V1BlockFrame;
 
 /// Maximum protocol header batch, independent of local fork capacity.
 pub(crate) const MAX_HEADERS: usize = 2000;
@@ -28,6 +30,10 @@ pub(crate) enum Message {
     Ping(u64),
     /// Bounded, uninterpreted protocol chatter.
     Ignore,
+    /// Body admitted only during an explicit block request.
+    Block(V1BlockFrame, Vec<u8>),
+    /// A peer declined data; interpreted only during an explicit request.
+    NotFound,
 }
 
 /// Send one locally constructed message; no peer-sized outbound allocation.
@@ -50,13 +56,40 @@ pub(crate) async fn receive(
     stream: &mut TcpStream,
     remaining_bytes: &mut usize,
 ) -> Result<Message, SyncError> {
+    receive_inner(stream, remaining_bytes, None).await
+}
+
+/// Admit body frames only within the single owner's download/decode budget.
+pub(crate) async fn receive_inner(
+    stream: &mut TcpStream,
+    remaining_bytes: &mut usize,
+    block_limits: Option<BlockDecodeLimits>,
+) -> Result<Message, SyncError> {
+    if *remaining_bytes < 24 {
+        return Err(SyncError::Protocol("exchange byte budget"));
+    }
+    // Reserve before reading: malformed/partial envelopes and cancellation count too.
+    *remaining_bytes -= 24;
     let mut envelope = [0; 24];
     stream.read_exact(&mut envelope).await?;
     if envelope[..4] != Network::Bitcoin.magic().to_bytes() {
         return Err(SyncError::Protocol("network magic"));
     }
     let command = &envelope[4..16];
+    let block_frame = if command == b"block\0\0\0\0\0\0\0" {
+        Some(
+            V1BlockFrame::parse(
+                &envelope,
+                Network::Bitcoin,
+                block_limits.ok_or(SyncError::Protocol("unsolicited block"))?,
+            )
+            .map_err(|_| SyncError::Protocol("block frame admission"))?,
+        )
+    } else {
+        None
+    };
     let (limit, buffered) = match command {
+        b"block\0\0\0\0\0\0\0" => (block_frame.expect("admitted block").payload_len(), true),
         b"version\0\0\0\0\0" => (350, true),
         b"headers\0\0\0\0\0" => (3 + MAX_HEADERS * 81, true),
         b"ping\0\0\0\0\0\0\0\0" => (8, true),
@@ -70,10 +103,10 @@ pub(crate) async fn receive(
         _ => return Err(SyncError::Protocol("unsupported command")),
     };
     let len = u32::from_le_bytes(envelope[16..20].try_into().expect("fixed slice")) as usize;
-    if len > limit || len + 24 > *remaining_bytes {
+    if len > limit || len > *remaining_bytes {
         return Err(SyncError::Protocol("frame or exchange byte budget"));
     }
-    *remaining_bytes -= len + 24;
+    *remaining_bytes -= len;
     let mut engine = sha256d::Hash::engine();
     let payload = if buffered {
         let mut payload = vec![0; len];
@@ -95,6 +128,11 @@ pub(crate) async fn receive(
         return Err(SyncError::Protocol("checksum"));
     }
     match command {
+        b"block\0\0\0\0\0\0\0" => Ok(Message::Block(
+            block_frame.expect("admitted block"),
+            payload,
+        )),
+        b"notfound\0\0\0\0" if block_limits.is_some() => Ok(Message::NotFound),
         b"version\0\0\0\0\0" => Ok(Message::Version(version(&payload)?)),
         b"headers\0\0\0\0\0" => Ok(Message::Headers(headers(&payload)?)),
         b"verack\0\0\0\0\0\0" => Ok(Message::Verack),
