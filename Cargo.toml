@@ -1,0 +1,25 @@
+[package]
+name = "fedimint-light-node"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Bounded-history Bitcoin backend for Fedimint guardians"
+
+[workspace]
+members = ["."]
+resolver = "3"
+
+[profile.dev]
+debug = false
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.ci]
+debug = false
+incremental = false
+inherits = "dev"
+lto = "off"
+
+[profile.ci.package."*"]
+debug = false
