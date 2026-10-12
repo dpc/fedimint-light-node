@@ -2,9 +2,14 @@
 
 ## Status
 
-The bootstrap implements only inclusive retention-range arithmetic.
-Persistent pruning, resource accounting, and request errors remain intended
-behavior for incremental implementation.
+The library implements inclusive retention-range arithmetic and atomic pruning
+of persisted canonical headers to an explicit capacity, with an explicit redb
+cache budget and bounded record decoding. Storage reports out-of-history
+queries separately from future heights and keeps pinned anchor and identity
+metadata outside the rolling window. It does not yet retain validation context
+or implement networking and body limits. Logical record bounds do not establish
+physical file-size or process-memory guarantees; resource accounting remains
+incomplete.
 
 ## Obligation
 

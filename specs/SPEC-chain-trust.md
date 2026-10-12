@@ -2,8 +2,11 @@
 
 ## Status
 
-The bootstrap performs no chain or block validation. This contract describes
-the requested end state to guide incremental implementation.
+The library performs no chain or block validation. Its header store persists
+caller-supplied anchors and linked canonical suffixes, without authenticating
+bootstrap sources or selecting branches by work. Missing retained ancestry
+produces a storage recovery error, not a node-wide recovery state. This contract
+describes the requested end state to guide incremental implementation.
 
 ## Record justification
 

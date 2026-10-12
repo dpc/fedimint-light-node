@@ -2,10 +2,14 @@
 
 An embeddable Rust Bitcoin backend for guardians that retain recent headers
 and retrieve complete blocks from peers without full consensus validation.
-This is a project bootstrap, **not a working node or a Bitcoin Core substitute**.
+This is an incremental implementation, **not a working node or a Bitcoin Core substitute**.
 
-The library currently provides only tested, overflow-safe retention-window
-arithmetic. There is no networking, storage, validation, adapter, or executable.
+The library provides tested retention-window arithmetic and a synchronous,
+bounded redb header store with versioned bincode records. Callers supply the
+anchor, chain identity, header capacity and database cache budget. Atomic suffix
+replacement and pruning preserve the pinned identity across restart. Storage
+checks linkage and record consistency, **not Bitcoin header validity or trust**.
+There is no networking, validation pipeline, guardian adapter, or executable.
 The intended boundaries are described in
 [ARCH-fedimint-light-node](specs/ARCH-fedimint-light-node.md).
 
@@ -20,9 +24,12 @@ formatting, prose, lockfile freshness, builds, and Clippy.
 
 Supported networks, bootstrap quorum and confirmation margin, fee policy,
 and a Fedimint Rust adapter versus a small RPC transport remain undecided.
-No resource capacities or production defaults have been chosen. Persistence
-will use redb with bincode encoding; dependencies arrive with that implementation.
-Actual fallback integration into Fedimint is outside this bootstrap.
+No resource capacities or production defaults have been chosen. The store starts
+at a caller-supplied anchor; backfill, separately bounded validation context,
+schema migration and capacity resizing are not implemented. A retained suffix
+alone does not provide enough context for future consensus checks. Record limits
+and an explicit cache budget are not a measured RSS or physical file-size bound.
+Actual fallback integration into Fedimint remains outside this implementation.
 
 ## AI usage disclosure
 
