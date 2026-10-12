@@ -18,8 +18,11 @@ use crate::store_error::StoreError;
 /// Forks may start at any retained, unprotected parent at or above the anchor.
 /// Candidates are bounded by header capacity and selected only by strictly greater
 /// relative work. No orphans, alternative branches or automatic recovery persist.
-/// A caller must stop affected service on `RecoveryRequired` and coordinate
-/// explicit recovery with consumers (SPEC-chain-trust).
+/// `RecoveryRequired` forbids applying that candidate with the available context
+/// and protection. An unsupported remote assertion does not establish that selected
+/// state needs recovery: reject it without stopping unrelated peers. Actual local
+/// state failures require stopping affected service and coordinating explicit
+/// recovery with consumers (SPEC-chain-trust).
 ///
 /// This is not a bootstrap authenticator, synchronizer, finality oracle or full
 /// consensus validator. Protect consumed history explicitly before exposing it
@@ -78,6 +81,11 @@ impl ValidatedHeaderStore {
     /// Return the inclusive queryable canonical range.
     pub fn bounds(&self) -> Result<(u64, u64), StoreError> {
         self.store.bounds()
+    }
+
+    /// Return the configured maximum retained headers and candidate suffix length.
+    pub fn capacity(&self) -> u64 {
+        self.store.capacity()
     }
 
     /// Read a selected header, without implying full consensus validity.
@@ -139,3 +147,7 @@ impl ValidatedHeaderStore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "validated_header_store_tests.rs"]
+mod tests;

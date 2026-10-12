@@ -17,8 +17,11 @@ A separate mainnet validator and validated-store boundary admit descendants and
 select bounded suffixes by relative work. Fixed-size context per retained header
 survives pruning and restart; an explicit caller protection floor prevents rollback
 through consumed history. Raw storage remains untrusted and cannot open validated
-stores. Bootstrap, synchronization, body retrieval and guardian integration below
-remain unimplemented.
+stores. Caller-driven outbound mainnet header synchronization uses one bounded
+peer session at a time, configured addresses, deadlines and contextual admission.
+Dropping a visit cancels its network work; already committed progress remains
+observable. It owns no runtime or detached tasks. Bootstrap, body retrieval and
+guardian integration below remain unimplemented.
 
 ## Boundaries and flow
 

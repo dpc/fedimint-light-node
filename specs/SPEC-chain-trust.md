@@ -17,10 +17,12 @@ validated; cumulative work counts only descendants above that common origin.
 The validated store atomically selects strictly higher-work bounded suffixes,
 retains validation checkpoints through pruning, and persists an explicit caller
 protection floor. Other networks are unsupported. Raw storage remains untrusted
-and cannot open validated state. Unsupported forks or protected-history conflicts
-produce explicit recovery errors, not a node-wide recovery state; embedding callers
-must stop affected service. Bootstrap source authentication, automatic chain-change
-notifications and body delivery remain unimplemented.
+and cannot open validated state. Outbound mainnet synchronization applies that
+validator to bounded peer candidates and exposes selected-tip changes, including
+progress committed before a later peer failure or cancellation. Unsupported remote
+candidates end that peer visit without replacing protected history or stopping
+other peers; local storage failures stop synchronization. Bootstrap source
+authentication and body delivery remain unimplemented.
 
 ## Record justification
 
@@ -43,11 +45,15 @@ Do not confuse satisfying a header's declared target with expected difficulty.
 Select competing supported branches by cumulative work relative to a common
 trusted anchor, not height or a peer's assertion.
 
-A fork requiring context outside supported history or conflicting with the
-trusted anchor must stop affected service with an explicit recovery-required
-state. It must not silently replace history already consumed as finalized.
-Recovery needs explicit operator action and coordination with the embedding
-guardian; neither automatic re-anchoring nor an external oracle is a substitute.
+A candidate requiring context outside supported history or conflicting with the
+trusted anchor or protection floor must not be applied. An untrusted peer's
+unsupported candidate is not evidence that selected state needs recovery:
+reject that candidate with an explicit diagnostic and permit other peers to progress.
+If local state cannot safely support selected-chain service, stop affected service
+with an explicit recovery-required state. Do not silently replace history already
+consumed as finalized. Recovery needs explicit operator action and coordination
+with the embedding guardian; neither automatic re-anchoring nor an external oracle
+is a substitute.
 Within supported history, chain changes must be observable to callers rather
 than claiming immutable finality.
 

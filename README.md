@@ -18,7 +18,8 @@ a caller-supplied network limit, **not expected difficulty or header validity**.
 Neither integrity API authenticates the requested hash or establishes consensus acceptance.
 The separate `HeaderContext` and `ValidatedHeaderStore` APIs implement contextual
 mainnet header validation and bounded canonical selection as described below.
-There is no networking, complete validation pipeline, guardian adapter, or executable.
+The `HeaderSync` API retrieves actual mainnet headers over outbound Bitcoin P2P.
+There is no body retrieval, complete validation pipeline, guardian adapter, or executable.
 The intended boundaries are described in
 [ARCH-fedimint-light-node](specs/ARCH-fedimint-light-node.md).
 
@@ -61,9 +62,11 @@ There is no orphan pool, persistent fork cache or archival recovery.
 Call `protect_through(height, hash)` before promising a selected header as finalized
 to a consumer. The monotonic protection floor survives pruning and restart; it is
 not inferred from confirmation counts. Forks crossing that floor, the anchor, or
-available context return `RecoveryRequired` without altering state. The embedding
-caller must stop affected service and coordinate explicit recovery. Supported chain
-changes are explicit `select_suffix` calls, not background notifications.
+available context return `RecoveryRequired` without altering state. An unsupported
+remote assertion does not prove selected state needs recovery; synchronization
+rejects that peer candidate and permits others to progress. Actual local failures
+stop affected service and require explicit recovery. Supported chain changes are
+observable through explicit store calls or synchronization status.
 
 Schema v2 commits headers, work, checkpoints and pruning atomically. Raw and
 validated stores cannot open each other's mode; raw storage cannot promote
@@ -73,6 +76,57 @@ authenticate a database against malicious replacement. Check semantics follow
 Bitcoin Core v30.0 `GetNextWorkRequired`, `ContextualCheckBlockHeader`,
 `GetMedianTimePast`, and mainnet chain parameters, with `rust-bitcoin` 0.32.102
 compact-target arithmetic. This is header-level checking, not full consensus.
+
+## Outbound header synchronization
+
+`HeaderSync::new(store, config)` takes an initialized `ValidatedHeaderStore` and
+explicit limits. Repeatedly await `step(now)` on a caller-owned Tokio runtime
+with I/O and time enabled. Each step visits one configured socket address, performs
+a mainnet v1 version/verack handshake, and requests headers from bounded locators.
+It validates expected difficulty, PoW and header context before selecting strictly
+higher relative work. Canonical progress commits in bounded chunks; a supported
+fork can accumulate across requests in that visit, but not across separate visits.
+Small store windows can consume protocol-sized 2,000-header replies without storing
+the entire reply at once. No live Internet access is needed by tests.
+
+The service visits peers sequentially and rotates after every attempt, including
+timeout, failure and cancellation. Every step incurs explicit retry pacing and has
+a fixed request budget. Absolute connect/handshake and request deadlines include
+all reads, writes and chatter. There is one socket, request and candidate globally
+per service, at most 16 configured addresses, no orphan pool, and no task/event
+queues. Each exchange admits at most 32 frames and 2 MB; the largest buffered
+payload is 162,003 bytes, and ignored bounded chatter streams through a 4 KiB
+scratch buffer. Header decoding adds at most 2,000 fixed-size headers; candidate
+storage is separately configured up to 32,000 headers and cannot exceed store
+capacity. Temporary store validation checkpoints also remain capacity-bounded.
+Unsolicited blocks are rejected before payload reads. This is bounded application
+state, not a measured RSS guarantee; caller-created service instances multiply it.
+
+Inspect each `SyncReport` for the attempted peer and its typed result, and inspect
+`status()` for selected height/hash and an in-memory selection generation.
+Advertised heights are ignored. Empty responses are observations, **not proof of
+freshness or an honest chain**. Generations expose changes even if a later exchange
+fails; they reset on restart and are not a durable notification log. Intermediate
+tips may be coalesced within one visit. Coordinate consumer reads between visits
+and call `protect_through` before promising finality.
+
+To cancel or shut down, drop the pending step future, then inspect status and drop
+the service or recover storage with `into_store()`. Sockets and candidates drop;
+no detached work survives. A completed atomic chunk remains committed. Validation
+and synchronous redb operations between awaits cannot be interrupted and can block
+the executor; latency-sensitive callers should use a dedicated caller-owned runtime
+thread. Unsupported remote candidates stop only their visit, without changing
+protected history; local storage/invariant failures latch the service stopped.
+There is no automatic re-anchoring or recovery.
+
+Tokio supplies maintained transport/deadlines; `rust-bitcoin` supplies message
+encoding, hashes and fixed header decoding. A narrow admission layer is used
+instead of its broad allocating network decoder: wire lengths, header counts,
+zero transaction counts and version user-agent lengths are checked before variable
+decoding. This avoids adding a general P2P framework for a single outbound flow.
+Only a bounded set of handshake and ordinary control/announcement messages is
+accepted. There is no peer discovery, inbound service, BIP324 transport, parallel
+peer diversity, transaction relay, body request, or production-readiness claim.
 
 ## Integrity boundary
 

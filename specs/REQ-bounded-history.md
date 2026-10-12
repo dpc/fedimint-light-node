@@ -15,7 +15,11 @@ before caller buffering; transport buffers and concurrency remain caller-owned.
 Validated mainnet storage keeps one fixed-size validation checkpoint per retained
 header, including retarget and median-time context, plus a pinned protection floor.
 Candidate suffixes are bounded by header capacity; no alternative branch pool exists.
-Networking and global body budgets remain unimplemented.
+Header synchronization bounds configured peers, sequential visits, message counts,
+wire bytes, deadlines and candidate state globally per service, not per connection.
+It has one socket and no task or event queues. Protocol header counts and version
+strings pass structural preflight before variable decoding; unsolicited bodies are
+rejected before payload reads. Body retrieval and its global budgets remain unimplemented.
 Logical record bounds do not establish
 physical file-size or process-memory guarantees; resource accounting remains
 incomplete.
