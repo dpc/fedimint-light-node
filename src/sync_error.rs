@@ -19,6 +19,9 @@ pub enum SyncError {
     /// A peer violated the supported bounded protocol.
     #[error("peer protocol violation: {0}")]
     Protocol(&'static str),
+    /// Unrecognized fixed-size command bytes, rendered without terminal control characters.
+    #[error("unsupported peer command bytes: {0:?}")]
+    UnsupportedCommand([u8; 12]),
     /// Remote ancestry or a fork exceeds available context, protection or capacity.
     ///
     /// This is not evidence that selected state needs recovery. Stop this peer

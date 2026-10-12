@@ -575,3 +575,24 @@ fn rejects_invalid_global_budgets() {
         Err(SyncError::Configuration)
     ));
 }
+
+#[tokio::test]
+async fn unsupported_command_reports_fixed_bytes_without_reading_payload_or_stopping() {
+    let dir = tempfile::tempdir().unwrap();
+    let (listener, addr) = listener().await;
+    let server = tokio::spawn(async move {
+        let mut stream = handshake(listener).await;
+        request(&mut stream).await;
+        // Keep unknown commands rejected before payload allocation; raw control
+        // characters in the diagnostic are rendered as numbers, never log escapes.
+        raw(&mut stream, b"\nunknown", &[], Some(4_000_000)).await;
+        closed(&mut stream).await;
+    });
+    let mut sync = service(&dir, config(vec![addr], 8));
+    let error = sync.step(u64::MAX).await.result.unwrap_err();
+    assert!(matches!(error, SyncError::UnsupportedCommand(_)));
+    assert!(!error.to_string().contains('\n'));
+    assert!(!sync.status().unwrap().stopped);
+    assert_eq!(sync.status().unwrap().generation, 0);
+    server.await.unwrap();
+}

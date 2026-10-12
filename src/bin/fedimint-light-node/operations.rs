@@ -63,6 +63,62 @@ pub async fn run(
         Command::Status => {
             output::status(&ValidatedHeaderStore::open_pinned(&options.db, config)?)?;
         }
+        Command::Serve {
+            network,
+            rpc_bind,
+            rpc_credentials,
+            fake_bitcoind,
+            allow_rpc_submission,
+        } => {
+            use fedimint_light_node::guardian_rpc::{GuardianRpc, SYNTHETIC_STATUS_WARNING};
+            use fedimint_light_node::guardian_rpc_config::GuardianRpcConfig;
+            let (username, password) = crate::rpc_credentials::read(&rpc_credentials)?;
+            let store = ValidatedHeaderStore::open_pinned(&options.db, config)?;
+            output::status(&store)?;
+            let mut sync_config =
+                network.sync_config(config.header_capacity.get(), 1, 8_000, 1, peer_cache);
+            // Fit a visit in the transport's fairness slice; no long Core-client waits.
+            sync_config.retry_delay = Duration::from_millis(100);
+            sync_config.handshake_timeout = Duration::from_secs(3);
+            sync_config.request_timeout = Duration::from_secs(3);
+            let sync = HeaderSync::new(store, sync_config)?.with_fee_policy(fee_policy);
+            let rpc = GuardianRpc::bind(
+                GuardianRpcConfig {
+                    bind: rpc_bind,
+                    username,
+                    password,
+                    fake_bitcoind,
+                    allow_submission: allow_rpc_submission,
+                },
+                sync,
+            )
+            .await?;
+            eprintln!(
+                "rpc_listen={} fake_bitcoind={fake_bitcoind} submission_only={allow_rpc_submission}",
+                rpc.local_addr()?
+            );
+            if fake_bitcoind {
+                eprintln!("WARNING: {SYNTHETIC_STATUS_WARNING}");
+            }
+            eprintln!(
+                "guardian protection is NOT automatic; reads never advance durable protection"
+            );
+            if allow_rpc_submission {
+                eprintln!(
+                    "WARNING: submission-only; no input fee/burn checks, mempool or acceptance guarantee; cancellation may follow delivery"
+                );
+            }
+            rpc.run(async { let _ = shutdown.await; }, |sync, diagnostic| {
+                match sync.status() {
+                    Ok(status) => {
+                        let (connections, candidates, cache_failed) = sync.peer_counts();
+                        eprintln!("sync: selected_height={} selected_hash={} generation={} connections={connections} candidates={candidates} cache_failed={cache_failed} freshness=unproven visit={diagnostic}",
+                            status.height, status.hash, status.generation);
+                    }
+                    Err(error) => eprintln!("sync: local state error: {error}"),
+                }
+            }).await?;
+        }
         Command::Broadcast {
             network,
             input,

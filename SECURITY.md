@@ -69,6 +69,25 @@ none is installed by the library. Signal cancellation cannot interrupt synchrono
 database work, block serialization or publication, and default runtime teardown
 can wait for HTTPS resolver jobs. This is not a hard shutdown-time guarantee.
 
+The explicit `serve` command adds a loopback-only Basic-authenticated RPC endpoint.
+Basic authentication is not encryption; local users can still connect or deny service.
+Use a private trusted parent directory and a mode-0600 regular credentials file;
+the pre-open file check is not a hostile-directory sandbox. Credentials are not
+printed. No cookie, TLS, proxy trust or public bind is implemented. Do not forward
+or expose the listener. The strict one-request HTTP dialect and aggregate bounds
+are in the [RPC guide](docs/guardian-rpc.md); excess work is rejected, not detached.
+Cheap reads take priority between bounded network operations. A client disconnect
+or timeout cancels queued/active work, including a leased P2P stream, but synchronous
+validation/database work cannot be interrupted.
+
+`--fake-bitcoind` permits only an enumerated synthetic Core-status schema, never
+state recovery, full validation or a bypass of storage readiness. It deliberately
+does not prove tip freshness. `--allow-rpc-submission` separately acknowledges
+submission-only transaction semantics without Core's implicit fee/burn safeguards.
+No standard RPC read advances durable protection; an external guardian commit
+cannot be inferred from a block/hash read. This transport is not a production
+guardian-finality integration.
+
 Block-file export uses private sibling staging and atomic no-overwrite publication.
 Existing entries, including aliases of the database, are refused. As with database
 publication, the caller must own the parent directory and inspect an output after

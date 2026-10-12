@@ -5,6 +5,7 @@ mod options;
 mod output;
 #[cfg(test)]
 mod output_tests;
+mod rpc_credentials;
 mod transaction_input;
 
 use std::future::Future;

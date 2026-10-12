@@ -29,7 +29,8 @@ on block counts and independently fetch bodies; they do not thereby agree on
 an authenticated hash chain. Here, external references establish the initial
 trusted checkpoint; contextual header validation and cumulative work select its
 descendants. Complete blocks still require download and mechanical integrity
-checks, and actual guardian integration remains future work.
+checks. A narrow guardian RPC profile exists; automatic consumer finality
+coordination and end-to-end guardian deployment remain future work.
 
 ## Implementation
 
@@ -51,7 +52,8 @@ The `HeaderSync` API retrieves actual mainnet headers and complete matching
 witness-bearing blocks on demand over outbound Bitcoin P2P.
 The `bootstrap` API initializes a fresh store from trusted HTTPS source agreement
 and bounded P2P ancestry. A thin executable exposes these library operations;
-there is no guardian adapter, RPC server, mempool or fee estimator.
+the [opt-in guardian RPC](guardian-rpc.md) adds authenticated loopback service
+and a mainnet walkthrough. There is no mempool or fee estimator.
 The intended boundaries are described in
 [ARCH-fedimint-light-node](../specs/ARCH-fedimint-light-node.md).
 
@@ -65,7 +67,8 @@ memory or disk guarantees.
 Build the release executable with `cargo build --release` inside `nix develop`,
 or run `nix build` and use `./result/bin/fedimint-light-node`. `nix run .# -- --help`
 also exposes the packaged executable. The library does not require this process.
-The CLI supports mainnet only and opens no listening socket. Public peer discovery
+The CLI supports mainnet only; only the explicit `serve` command opens a
+loopback RPC listener. Public peer discovery
 is enabled by default; explicit numeric peer addresses are optional.
 
 Use a private directory on a local filesystem supporting hard links and durable
@@ -197,7 +200,8 @@ and [security boundaries](../SECURITY.md) before relying on any source set.
 Errors go to stderr and return nonzero. `sync --once` returns failure for a failed
 visit; continuous sync logs retryable peer failures and rotates, but stops on
 terminal local failures. Selected progress can commit before a later failure.
-SIGINT/SIGTERM cancels awaited P2P work and exits 130; sync prints selected state
+SIGINT/SIGTERM cancels awaited P2P work and exits 130 (a clean `serve` shutdown exits
+zero); sync prints selected state
 after cancellation. Synchronous database, validation and publication work cannot
 be interrupted between awaits. HTTPS OS resolver jobs can outlive cancellation
 and delay runtime shutdown; neither the CLI nor the library promises a hard
@@ -305,8 +309,9 @@ formatting, prose, lockfile freshness, builds, and Clippy.
 
 ## Unsettled integration choices
 
-Networks beyond mainnet, fee policy,
-and a Fedimint Rust adapter versus a small RPC transport remain undecided.
+Networks beyond mainnet, automatic consumer finality binding and a measured
+network fee estimator remain unimplemented. The narrow RPC transport supports
+explicit static or unavailable fee policy.
 Bootstrap supplies conservative configurable defaults; lower-level APIs still take
 explicit capacities. Schema migration and capacity resizing are not implemented.
 The validated store retains bounded context separately

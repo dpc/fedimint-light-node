@@ -33,8 +33,11 @@ pool discovers public peers, retains useful connections and rotates an
 exploratory connection. Manually configured peers and a manual-only mode remain
 available. Discovery supplies availability hints, never chain authority.
 
+An opt-in authenticated loopback [guardian RPC and mainnet demo](docs/guardian-rpc.md)
+supports the narrow Fedimint client profile. `--fake-bitcoind` explicitly enables
+synthetic Core status; it does not establish freshness or validation.
 There is **no full consensus validation, UTXO set, wallet-history service, inbound
-listener or Fedimint guardian adapter**. This is not yet a production-ready
+P2P listener or automatic guardian finality binding**. This is not yet a production-ready
 guardian backend or a substitute for Bitcoin Core's validation.
 
 ## How does this compare?

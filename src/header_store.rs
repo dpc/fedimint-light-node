@@ -212,6 +212,22 @@ impl HeaderStore {
         read_header(&read.open_table(HEADERS)?, height)
     }
 
+    /// Scan at most the configured retained capacity in one read transaction.
+    pub(crate) fn height_for_hash(
+        &self,
+        hash: bitcoin::BlockHash,
+    ) -> Result<Option<u64>, StoreError> {
+        let read = self.database.begin_read()?;
+        let metadata = read_metadata(&read.open_table(META)?)?;
+        let headers = read.open_table(HEADERS)?;
+        for height in (metadata.first..=metadata.tip).rev() {
+            if read_header(&headers, height)?.block_hash() == hash {
+                return Ok(Some(height));
+            }
+        }
+        Ok(None)
+    }
+
     /// Atomically replace everything after a retained parent and prune old headers.
     ///
     /// Passing the tip appends; an empty slice truncates to the parent. The parent

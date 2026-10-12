@@ -36,8 +36,10 @@ the direct P2P socket-lifecycle guarantees. A thin operational executable owns
 runtime and process signals while exposing bootstrap, offline status/protection,
 header visits, body-file export and bounded transaction submission through these APIs.
 Submission shares the pool and exclusive foreground owner without a mempool or retry queue;
-a completed write establishes neither acceptance nor propagation. Guardian integration below
-remains unimplemented. Fee information is caller configuration: unavailable by
+a completed write establishes neither acceptance nor propagation. An optional authenticated
+loopback RPC transport serializes requests with continuing synchronization under one owner;
+the caller still owns its runtime and shutdown. Synthetic Core status is explicit opt-in.
+Consumer finality binding remains unimplemented. Fee information is caller configuration: unavailable by
 default or a positive operator-supplied static rate, not an estimator or a new
 network service. It is not persisted with chain state.
 

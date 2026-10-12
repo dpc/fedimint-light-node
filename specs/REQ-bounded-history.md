@@ -44,6 +44,11 @@ Outbound transaction submission shares the exclusive owner, bounds canonical
 serialization and weight before outbound allocation, and caps sequential attempts,
 received/sent wire reservations, handshake messages and absolute deadlines. No
 mempool, persistent retry queue or automatic rebroadcast is implemented.
+The optional loopback RPC transport bounds accepted sockets, HTTP framing, JSON
+complexity, request/response bytes, pending work and operation deadlines. Cheap
+reads take priority between network operations, while scheduled sync visits
+continue under load. Transport cancellation releases queued or leased work,
+but cannot undo completed transaction delivery or interrupt synchronous work.
 
 ## Obligation
 

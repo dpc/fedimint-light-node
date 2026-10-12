@@ -163,6 +163,14 @@ impl ValidatedHeaderStore {
         self.store.header(height)
     }
 
+    /// Resolve a selected hash by bounded retained-header scan, without protecting it.
+    ///
+    /// `None` means unknown or not retained, not proof that a block was pruned.
+    /// The pinned height-one identity exception does not make its body available.
+    pub fn height_for_hash(&self, hash: BlockHash) -> Result<Option<u64>, StoreError> {
+        self.store.height_for_hash(hash)
+    }
+
     /// Return a copy of the tip's bounded validation and relative-work context.
     pub fn tip_context(&self) -> Result<HeaderContext, StoreError> {
         self.store.context(self.store.bounds()?.1)

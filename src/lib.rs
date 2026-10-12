@@ -10,7 +10,8 @@
 //! on-demand witness-bearing block retrieval continue without those sources.
 //! The same exclusive owner submits bounded caller-owned transactions; a completed
 //! local write establishes neither peer acceptance, propagation nor confirmation.
-//! Guardian integration is not implemented.
+//! An optional bounded loopback RPC profile supports guardian clients, with
+//! explicitly opt-in synthetic status and no automatic consumer finality binding.
 
 pub mod block_decode;
 pub mod block_download_config;
@@ -23,6 +24,8 @@ pub mod declared_pow;
 pub mod decode_error;
 pub mod fee_policy;
 pub mod frame_error;
+pub mod guardian_rpc;
+pub mod guardian_rpc_config;
 pub mod header_context;
 pub mod header_error;
 pub mod header_store;
@@ -37,6 +40,12 @@ mod peer_connection;
 mod peer_pool;
 pub mod peer_pool_config;
 pub mod retained_range;
+mod rpc_http;
+#[cfg(test)]
+mod rpc_http_tests;
+mod rpc_method;
+#[cfg(test)]
+mod rpc_method_tests;
 pub mod store_anchor;
 pub mod store_config;
 pub mod store_error;

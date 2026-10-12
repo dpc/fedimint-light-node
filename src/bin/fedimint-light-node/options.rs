@@ -71,6 +71,23 @@ pub enum Command {
     },
     /// Report pinned and selected state offline, not node health.
     Status,
+    /// Sync while serving a bounded authenticated guardian-only RPC on loopback.
+    Serve {
+        #[command(flatten)]
+        network: Network,
+        /// Numeric loopback listen address; no public interfaces accepted.
+        #[arg(long, default_value = "127.0.0.1:18443")]
+        rpc_bind: SocketAddr,
+        /// Private regular file containing username:password (optional final newline).
+        #[arg(long)]
+        rpc_credentials: PathBuf,
+        /// Opt in to synthetic Core status, NOT validation, freshness or readiness.
+        #[arg(long)]
+        fake_bitcoind: bool,
+        /// Enable submission-only sendrawtransaction WITHOUT Core fee/burn safeguards.
+        #[arg(long)]
+        allow_rpc_submission: bool,
+    },
     /// Visit configured peers repeatedly until interrupted; --once visits one peer.
     Sync {
         #[command(flatten)]

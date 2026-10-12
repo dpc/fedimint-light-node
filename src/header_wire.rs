@@ -113,7 +113,11 @@ pub(crate) async fn receive_inner(
         b"sendcmpct\0\0\0" => (9, false),
         b"inv\0\0\0\0\0\0\0\0\0" | b"notfound\0\0\0\0" => (1_800_003, false),
         b"addr\0\0\0\0\0\0\0\0" => (30_003, false),
-        _ => return Err(SyncError::Protocol("unsupported command")),
+        _ => {
+            return Err(SyncError::UnsupportedCommand(
+                command.try_into().expect("fixed command"),
+            ));
+        }
     };
     let len = u32::from_le_bytes(envelope[16..20].try_into().expect("fixed slice")) as usize;
     if len > limit || len > *remaining_bytes {

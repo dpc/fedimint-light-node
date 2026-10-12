@@ -74,3 +74,8 @@ interoperate
 benchmarked
 microbenchmarks
 boolean
+bitcoind
+pipelining
+serde
+softfork
+txid
