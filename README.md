@@ -28,6 +28,11 @@ there is no guardian adapter, RPC server, transaction broadcast or fee estimator
 The intended boundaries are described in
 [ARCH-fedimint-light-node](specs/ARCH-fedimint-light-node.md).
 
+The [local release resource exercise](docs/resource-exercise.md) records measured
+raw-store rollover, smaller real validated-chain storage, body-decoding pressure
+and scripted-peer failures. These workload-specific results are not production
+memory or disk guarantees.
+
 ## Operational walkthrough
 
 Build the release executable with `cargo build --release` inside `nix develop`,
