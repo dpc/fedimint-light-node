@@ -7,6 +7,12 @@ backend, not capabilities of the bootstrap library.
 The library and CLI now support bounded caller-driven transaction submission;
 completed writes do not establish peer acceptance, propagation or confirmation.
 Cancellation can follow delivery; retry remains an explicit caller decision.
+The concrete owner also exposes checked selected count, pinned height-one identity,
+retained height-to-hash queries and unavailable synchronization progress. Reads and
+body retrieval do not protect history. Fee policy defaults to unavailable or is an
+explicit positive operator-supplied static rate in satoshis per 1,000 virtual bytes,
+not a network estimate. The embedding example demonstrates these operations;
+consumer database finality coordination and actual Fedimint integration remain absent.
 
 ## Authority and scope
 

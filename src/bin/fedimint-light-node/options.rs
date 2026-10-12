@@ -6,6 +6,7 @@ use std::time::Duration;
 use bitcoin::BlockHash;
 use clap::{Args, Parser, Subcommand};
 use fedimint_light_node::bootstrap_config::BootstrapSource;
+use fedimint_light_node::fee_policy::FeePolicy;
 use fedimint_light_node::store_config::StoreConfig;
 use fedimint_light_node::sync_config::SyncConfig;
 
@@ -22,12 +23,22 @@ pub struct Options {
     /// Database cache in MiB, not an RSS or disk-size limit.
     #[arg(long, global = true, default_value_t = 8, value_parser = clap::value_parser!(u64).range(1..=64))]
     pub cache_mib: u64,
+    /// Positive operator-supplied sats per 1,000 virtual bytes; omitted = unavailable.
+    /// Static policy only, never a network estimate; not persisted in the database.
+    #[arg(long, global = true)]
+    pub fixed_fee_sats_per_kvb: Option<NonZeroU64>,
     /// Requested operation.
     #[command(subcommand)]
     pub command: Command,
 }
 
 impl Options {
+    /// Resolve explicit caller fee configuration without inventing an estimate.
+    pub fn fee_policy(&self) -> FeePolicy {
+        self.fixed_fee_sats_per_kvb
+            .map(|sats_per_kvb| FeePolicy::Fixed { sats_per_kvb })
+            .unwrap_or_default()
+    }
     /// Convert checked CLI budgets to the library's explicit storage configuration.
     pub fn store_config(&self) -> StoreConfig {
         StoreConfig {

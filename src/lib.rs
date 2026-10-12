@@ -21,6 +21,7 @@ pub mod bootstrap_config;
 pub mod bootstrap_error;
 pub mod declared_pow;
 pub mod decode_error;
+pub mod fee_policy;
 pub mod frame_error;
 pub mod header_context;
 pub mod header_error;

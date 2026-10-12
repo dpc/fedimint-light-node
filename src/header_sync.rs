@@ -11,6 +11,7 @@ use crate::block_download::download;
 use crate::block_download_config::BlockDownloadConfig;
 use crate::block_download_error::BlockDownloadError;
 use crate::declared_pow::check_declared_pow;
+use crate::fee_policy::FeePolicy;
 use crate::header_error::HeaderError;
 use crate::header_wire::{Message, receive, send};
 use crate::peer_handshake::handshake;
@@ -50,11 +51,15 @@ pub struct HeaderSync {
     generation: u64,
     /// Terminal local/recovery failures require explicit caller intervention.
     stopped: bool,
+    /// Operator fee information, independent of selected headers and persistence.
+    fee_policy: FeePolicy,
 }
 
 /// Selected state, not a freshness claim or a consensus-valid chain guarantee.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyncStatus {
+    /// Explicit operator policy, not an inferred network estimate.
+    pub fee_policy: FeePolicy,
     /// Current selected height.
     pub height: u64,
     /// Current selected hash.
@@ -63,6 +68,18 @@ pub struct SyncStatus {
     pub generation: u64,
     /// A terminal error has stopped further visits.
     pub stopped: bool,
+}
+
+impl SyncStatus {
+    /// Count selected blocks including height zero, without a finality subtraction.
+    ///
+    /// A supported reorganization may reduce this count. Neither reading it nor
+    /// fetching a block protects history or proves freshness.
+    pub fn block_count(&self) -> Result<u64, StoreError> {
+        self.height
+            .checked_add(1)
+            .ok_or(StoreError::InvalidUpdate("selected block count overflow"))
+    }
 }
 
 /// One bounded peer visit, possibly with committed progress before its result.
@@ -95,13 +112,52 @@ impl HeaderSync {
             next_peer: 0,
             generation: 0,
             stopped: false,
+            fee_policy: FeePolicy::default(),
         })
+    }
+
+    /// Set explicit fee information; positive fixed rates are enforced by the type.
+    ///
+    /// The default is unavailable. Policy is caller configuration, not persisted
+    /// chain state: the caller must supply it again after reopening.
+    pub fn with_fee_policy(mut self, policy: FeePolicy) -> Self {
+        self.fee_policy = policy;
+        self
+    }
+
+    /// Return explicit fee policy without contacting a peer or estimating fees.
+    pub fn fee_policy(&self) -> FeePolicy {
+        self.fee_policy
+    }
+
+    /// Return selected tip height plus one, without protecting the returned state.
+    pub fn block_count(&self) -> Result<u64, StoreError> {
+        self.status()?.block_count()
+    }
+
+    /// Return pinned height-ONE identity, even after that header has been pruned.
+    pub fn chain_id(&self) -> BlockHash {
+        self.store.anchor().height_one_hash
+    }
+
+    /// Resolve a retained selected height without fetching or protecting history.
+    ///
+    /// Old heights return `OutsideRetainedHistory`; future heights return
+    /// `BeyondTip`. This never downloads historical headers.
+    pub fn block_hash(&self, height: u64) -> Result<BlockHash, StoreError> {
+        Ok(self.store.header(height)?.block_hash())
+    }
+
+    /// Return no progress estimate: no credible network-tip denominator is known.
+    pub fn sync_progress(&self) -> Option<f64> {
+        None
     }
 
     /// Return current selected state, also after cancellation or a failed visit.
     pub fn status(&self) -> Result<SyncStatus, StoreError> {
         let context = self.store.tip_context()?;
         Ok(SyncStatus {
+            fee_policy: self.fee_policy,
             height: context.height(),
             hash: context.tip().block_hash(),
             generation: self.generation,

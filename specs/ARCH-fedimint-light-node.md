@@ -33,7 +33,9 @@ runtime and process signals while exposing bootstrap, offline status/protection,
 header visits, body-file export and bounded transaction submission through these APIs.
 Submission shares the exclusive network owner without a mempool or retry queue;
 a completed write establishes neither acceptance nor propagation. Guardian integration below
-remains unimplemented.
+remains unimplemented. Fee information is caller configuration: unavailable by
+default or a positive operator-supplied static rate, not an estimator or a new
+network service. It is not persisted with chain state.
 
 ## Boundaries and flow
 

@@ -20,6 +20,8 @@ pub async fn run(
     mut shutdown: Pin<&mut impl Future<Output = io::Result<()>>>,
 ) -> Result<()> {
     let config = options.store_config();
+    let fee_policy = options.fee_policy();
+    output::fee_policy(fee_policy)?;
     match options.command {
         Command::Bootstrap {
             network,
@@ -69,7 +71,8 @@ pub async fn run(
             let mut sync = HeaderSync::new(
                 store,
                 network.sync_config(config.header_capacity.get(), 4, 8_000, retry_seconds),
-            )?;
+            )?
+            .with_fee_policy(fee_policy);
             eprintln!(
                 "submission is a local write only; cancellation may follow delivery; explicit retry is allowed"
             );
@@ -113,7 +116,8 @@ pub async fn run(
                     candidate_headers,
                     retry_seconds,
                 ),
-            )?;
+            )?
+            .with_fee_policy(fee_policy);
             loop {
                 let report = tokio::select! {
                     biased;
@@ -164,7 +168,8 @@ pub async fn run(
             let mut sync = HeaderSync::new(
                 store,
                 network.sync_config(config.header_capacity.get(), 4, 8_000, retry_seconds),
-            )?;
+            )?
+            .with_fee_policy(fee_policy);
             let limits = BlockDownloadConfig {
                 max_attempts: 16,
                 total_timeout: Duration::from_secs(total_seconds),

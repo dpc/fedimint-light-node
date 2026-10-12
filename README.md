@@ -4,6 +4,7 @@ An embeddable Rust Bitcoin backend for guardians that retain recent headers
 and retrieve complete blocks from peers without full consensus validation.
 This experimental implementation can bootstrap mainnet history, synchronize
 headers, retrieve complete blocks, and submit caller-supplied transactions.
+It exposes explicit static or unavailable fee information for embedding.
 **It is not a Bitcoin Core substitute,
 a full consensus validator, or a production-ready guardian backend.**
 
@@ -120,6 +121,37 @@ an existing database. Example: add `--capacity 2016 --cache-mib 1` to **each**
 invocation for a smaller experimental store. These are logical state and cache
 budgets, not a measured RSS or file-size promise.
 
+### Explicit fee policy
+
+`HeaderSync::new` defaults to `FeePolicy::Unavailable`; use
+`with_fee_policy(FeePolicy::Fixed { sats_per_kvb })` to supply a positive
+`NonZeroU64` rate. Units are **satoshis per 1,000 virtual bytes**, not sat/vB
+or sat/kwu. The value is returned unchanged: 2,500 means 2.5 sat/vB.
+Zero is rejected rather than treated as an unavailable or adaptive policy.
+There is no HTTP fee service, mempool or UTXO estimator, confirmation-target
+model, or guarantee that a fixed rate will confirm. Policy does not compute or
+validate fees of submitted transactions.
+
+All CLI operations accept `--fixed-fee-sats-per-kvb INTEGER` and report the
+policy as `fixed-operator-supplied`; omission reports `unavailable`. Configuration
+belongs to the invocation, **not the database**: supply it on each restart.
+
+```sh
+fedimint-light-node --db ./node-data/headers.redb \
+  --fixed-fee-sats-per-kvb 2500 status
+```
+
+This is not a Fedimint adapter. In the read-only reference at Fedimint commit
+`502b7ec7da37d231b21d5bce993e9b9a9e7b63a6`,
+walletv1 `get_fee_rate_opt` uses its configured fallback when the backend has
+no rate. Walletv2 `consensus_feerate` discards `None` votes and needs a threshold
+of actual fee votes. Thus the unavailable default does **not** establish walletv2
+usability: a future deployment must configure appropriate fixed policies
+consistently across guardians or explicitly design another fee source.
+Recheck those interfaces when implementing integration.
+
+### Network operation limits
+
 Network command help exposes exchange deadlines, pacing and operation-specific
 limits. Defaults are 20-second exchanges, five seconds before each sync/fetch
 connection, four header requests per sync visit, and at most 8,000 candidate
@@ -150,9 +182,11 @@ replace or re-anchor the database automatically on an operational failure.
 
 ## Embed without a standalone process
 
-The compiling [`examples/embed.rs`](examples/embed.rs) walkthrough opens a pinned
-store offline, drives one bounded peer visit, fetches a selected block, and returns
-ownership. It owns its Tokio runtime and deadline; there is no library-installed
+The compiling [`examples/embed.rs`](examples/embed.rs) walkthrough explicitly
+bootstraps a new store or opens a pinned store offline, queries count/identity/fees,
+drives one bounded peer visit, fetches a selected block, optionally protects and
+submits a caller-owned transaction, then reopens to inspect durable protection.
+It owns its Tokio runtime and deadline; there is no library-installed
 signal handler, global logging setup, detached maintenance task or listener.
 Replace its deadline future with your application's cancellation channel or token.
 
@@ -160,6 +194,11 @@ Replace its deadline future with your application's cancellation channel or toke
 cargo run --example embed -- --db ./node-data/headers.redb --peer "$PEER"
 # Explicitly opt into persisting protection for the returned selected block:
 cargo run --example embed -- --db ./node-data/headers.redb --peer "$PEER" --protect
+# Explicit NEW-store creation, using the documented default trusted sources:
+cargo run --example embed -- --db ./node-data/new.redb --peer "$PEER" --bootstrap
+# Optional submission of canonical binary transaction bytes, not hex or a PSBT:
+cargo run --example embed -- --db ./node-data/headers.redb --peer "$PEER" \
+  --fixed-fee-sats-per-kvb 2500 --transaction ./signed-tx.raw
 ```
 
 Use `bootstrap(path, config, now).await` only for initial creation, then
@@ -170,6 +209,21 @@ change during delivery. Cancel by dropping the pending future, then inspect
 persists a rollback floor before you expose irreversible consumer results;
 `into_store` returns storage ownership. Do not run the next sync visit between
 fetch and a required protection decision.
+
+`block_count()` returns checked selected tip height plus one, including height
+zero and without subtracting wallet finality delay. A supported higher-work reorg
+can reduce it. `chain_id()` returns the pinned **height-one** hash, even after
+pruning; `block_hash(height)` only resolves retained selected heights.
+`sync_progress()` returns `None`, not a guessed percentage or a freshness claim.
+Neither count nor fetch implicitly protects the tip. Protection starts at the
+trusted anchor and is durable and monotonic; for older already-protected ancestry,
+inspect the existing floor instead of attempting to lower it.
+
+The example's optional submission shares the same exclusive owner and finite
+budgets as the CLI. Completed writes do not prove receipt, acceptance, propagation
+or confirmation. Cancellation can follow delivery and lose the report; the caller
+must decide whether to retry. Fee policy neither creates transactions nor checks
+that they pay the configured rate.
 
 The example returns typed library errors rather than hiding them behind a retry
 loop. Real integrations should distinguish permanent outside-history requests

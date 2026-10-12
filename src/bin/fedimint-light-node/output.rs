@@ -4,10 +4,24 @@ use std::path::Path;
 
 use bitcoin::Block;
 use bitcoin::consensus::Encodable;
+use fedimint_light_node::fee_policy::FeePolicy;
 use fedimint_light_node::transaction_submission_report::TransactionSubmissionReport;
 use fedimint_light_node::validated_header_store::ValidatedHeaderStore;
 
 use crate::Result;
+
+/// Report invocation-local fee configuration, never an estimate from chain state.
+pub fn fee_policy(policy: FeePolicy) -> Result<()> {
+    let mut out = io::stdout().lock();
+    match policy {
+        FeePolicy::Unavailable => writeln!(out, "fee_policy=unavailable")?,
+        FeePolicy::Fixed { sats_per_kvb } => {
+            writeln!(out, "fee_policy=fixed-operator-supplied")?;
+            writeln!(out, "fee_sats_per_kvb={sats_per_kvb}")?;
+        }
+    }
+    Ok(())
+}
 
 /// Print every local write observation without claiming remote acceptance.
 pub fn submission(report: &TransactionSubmissionReport) -> Result<()> {
@@ -69,6 +83,7 @@ pub fn status(store: &ValidatedHeaderStore) -> Result<()> {
     writeln!(out, "capacity={}", store.capacity())?;
     writeln!(out, "protected_height={}", store.protected_height()?)?;
     writeln!(out, "freshness=unproven")?;
+    writeln!(out, "sync_progress=unavailable")?;
     writeln!(out, "body_availability=unproven")?;
     writeln!(out, "validation=mechanical-not-full-consensus")?;
     Ok(())

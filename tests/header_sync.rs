@@ -10,10 +10,12 @@ use bitcoin::p2p::address::Address;
 use bitcoin::p2p::message::{NetworkMessage, RawNetworkMessage};
 use bitcoin::p2p::message_network::VersionMessage;
 use bitcoin::{BlockHash, CompactTarget, Network};
+use fedimint_light_node::fee_policy::FeePolicy;
 use fedimint_light_node::header_error::HeaderError;
 use fedimint_light_node::header_sync::{HeaderSync, VisitEnd};
 use fedimint_light_node::store_anchor::StoreAnchor;
 use fedimint_light_node::store_config::StoreConfig;
+use fedimint_light_node::store_error::StoreError;
 use fedimint_light_node::sync_config::SyncConfig;
 use fedimint_light_node::sync_error::SyncError;
 use fedimint_light_node::validated_header_store::ValidatedHeaderStore;
@@ -66,6 +68,83 @@ fn service(dir: &tempfile::TempDir, config: SyncConfig) -> HeaderSync {
     )
     .unwrap();
     HeaderSync::new(store, config).unwrap()
+}
+
+#[test]
+fn guardian_queries_survive_pruning_reopen_without_implicit_protection() {
+    let dir = tempfile::tempdir().unwrap();
+    let headers = headers();
+    let mut store = ValidatedHeaderStore::create(
+        dir.path().join("chain"),
+        storage_config(2),
+        anchor(),
+        &headers[..1],
+    )
+    .unwrap();
+    store.select_suffix(0, &headers[1..=2], u64::MAX).unwrap();
+    store.select_suffix(2, &headers[3..=4], u64::MAX).unwrap();
+    let cfg = config(vec!["127.0.0.1:1".parse().unwrap()], 2);
+    let node = HeaderSync::new(store, cfg.clone()).unwrap();
+    assert_eq!(node.fee_policy(), FeePolicy::Unavailable);
+    assert_eq!(node.status().unwrap().fee_policy.sats_per_kvb(), None);
+    assert_eq!(node.block_count().unwrap(), 5);
+    assert_eq!(node.chain_id(), headers[1].block_hash());
+    assert_eq!(node.block_hash(4).unwrap(), headers[4].block_hash());
+    assert!(matches!(
+        node.block_hash(1),
+        Err(StoreError::OutsideRetainedHistory)
+    ));
+    assert!(matches!(node.block_hash(5), Err(StoreError::BeyondTip)));
+    assert_eq!(node.sync_progress(), None);
+    assert_eq!(node.store().protected_height().unwrap(), 0);
+    let policy = FeePolicy::Fixed {
+        sats_per_kvb: NonZeroU64::new(2500).unwrap(),
+    };
+    let mut node = node.with_fee_policy(policy);
+    assert_eq!(node.status().unwrap().fee_policy, policy);
+    assert_eq!(node.fee_policy().sats_per_kvb().unwrap().get(), 2500);
+    node.protect_through(3, headers[3].block_hash()).unwrap();
+    drop(node);
+    let store =
+        ValidatedHeaderStore::open_pinned(dir.path().join("chain"), storage_config(2)).unwrap();
+    let node = HeaderSync::new(store, cfg).unwrap();
+    assert_eq!(node.block_count().unwrap(), 5);
+    assert_eq!(node.chain_id(), headers[1].block_hash());
+    assert_eq!(node.block_hash(3).unwrap(), headers[3].block_hash());
+    assert_eq!(node.store().protected_height().unwrap(), 3);
+    assert_eq!(node.fee_policy(), FeePolicy::Unavailable); // Host must reconfigure.
+}
+
+#[test]
+fn selected_count_checks_overflow_and_includes_height_zero() {
+    let mut status = fedimint_light_node::header_sync::SyncStatus {
+        fee_policy: FeePolicy::default(),
+        height: 0,
+        hash: headers()[0].block_hash(),
+        generation: 0,
+        stopped: false,
+    };
+    assert_eq!(status.block_count().unwrap(), 1);
+    status.height = u64::MAX - 1;
+    assert_eq!(status.block_count().unwrap(), u64::MAX);
+    status.height = u64::MAX;
+    assert!(matches!(
+        status.block_count(),
+        Err(StoreError::InvalidUpdate(_))
+    ));
+}
+
+#[test]
+fn fixed_fee_policy_has_positive_explicit_units_without_conversion_overflow() {
+    assert_eq!(FeePolicy::default().sats_per_kvb(), None);
+    assert!(NonZeroU64::new(0).is_none());
+    for value in [1, 1000, 2500, u64::MAX] {
+        let rate = NonZeroU64::new(value).unwrap();
+        assert_eq!(
+            FeePolicy::Fixed { sats_per_kvb: rate }.sats_per_kvb(),
+            Some(rate)
+        );
+    }
 }
 
 async fn listener() -> (TcpListener, SocketAddr) {

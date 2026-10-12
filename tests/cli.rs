@@ -58,6 +58,10 @@ fn help_and_argument_errors_are_offline() {
         vec!["--capacity", "0", "status"],
         vec!["--capacity", "105121", "status"],
         vec!["--cache-mib", "65", "status"],
+        vec!["--fixed-fee-sats-per-kvb", "0", "status"],
+        vec!["--fixed-fee-sats-per-kvb", "18446744073709551616", "status"],
+        vec!["--fixed-fee-sats-per-kvb", "1.5", "status"],
+        vec!["--fixed-fee-sats-per-kvb", "-1", "status"],
         vec!["sync"],
         vec!["sync", "--peer", "hostname:8333"],
         vec!["sync", "--peer", "127.0.0.1:1", "--requests", "17"],
@@ -90,6 +94,27 @@ fn help_and_argument_errors_are_offline() {
         );
         assert!(!db.exists());
     }
+}
+
+#[test]
+fn fee_policy_is_explicit_positive_and_invocation_local() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("chain");
+    create(&db);
+    for value in ["1", "2500", "18446744073709551615"] {
+        let status = stdout(
+            &command(&db)
+                .args(["status", "--fixed-fee-sats-per-kvb", value])
+                .output()
+                .unwrap(),
+        );
+        assert!(status.contains("fee_policy=fixed-operator-supplied"));
+        assert!(status.contains(&format!("fee_sats_per_kvb={value}\n")));
+    }
+    let status = stdout(&command(&db).arg("status").output().unwrap());
+    assert!(status.contains("fee_policy=unavailable"));
+    assert!(!status.contains("fee_sats_per_kvb="));
+    assert!(status.contains("sync_progress=unavailable"));
 }
 
 #[test]
