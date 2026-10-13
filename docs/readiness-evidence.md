@@ -3,9 +3,11 @@
 **These bounded experiments found and fixed a real peer interoperability defect.
 They do not certify production readiness.** Default-scale storage, composed body
 memory pressure, process crashes, actual isolated ENOSPC, allocation failure and
-short coverage-guided fuzz campaigns now have reproducible evidence. A later
-offline campaign also measured real four-peer/RPC pressure and cancellation.
-Automatic
+short and four-CPU-hour-per-target coverage-guided fuzz campaigns now have
+reproducible evidence. Later campaigns measured real four-peer/RPC pressure and
+cancellation, and finite public-network availability with three body failures.
+The attempted 24-hour soak stopped at its shared traffic budget, not a duration
+PASS. Automatic
 guardian commit protection remains absent; the [operations limitations](operations.md)
 still apply. Full Bitcoin consensus remains outside this library's contract.
 
@@ -550,7 +552,7 @@ Both external fixture digests are checked before use. This regression is ignored
 in ordinary CI because the large public-ledger fixtures are not checked in; the
 small managed-pool regression runs in ordinary CI.
 
-## Extended campaigns — pending, not completed evidence
+## Extended campaigns — terminal results within scope
 
 A 24-hour soak began October 13, 2026 at 01:12:50 UTC, but was deliberately
 interrupted after about 1,055 seconds to release an orchestration lock that
@@ -566,19 +568,53 @@ pre-arm parent mismatch, and actual managed-tool cancellation. This guarantee
 requires long-lived spawning threads and trusted ordinary executables without
 credential changes; it is not a general descendant-process sandbox.
 
-The replacement started **October 13, 2026 at 01:36:18 UTC**, due October 14 at
-01:36:18 UTC plus its 60-second watchdog. Its private external directory is
+The replacement started **October 13, 2026 at 01:36:18 UTC**. Its private external directory is
 `/tmp/public/cg3s-soak-24h-tsxSc`, also recorded by
 `target/readiness/soak-24h-restarted-path`. It uses the unchanged release binary
 above, corrected pinned scripts, and a fresh copy of the stopped 720-second
 store, not a new bootstrap. Its manifest records all digests. The existing
 2 GiB namespace traffic stop, sampled RSS/FD/disk limits and six-hour alternating
 restart policy remain unchanged. There is no five-minute disconnect injection.
-The managed command uses shell `exec` from an independent directory, so the
-ongoing campaign does not hold the source repository's update lock.
+The managed command used shell `exec` from an independent directory, so the
+campaign did not hold the source repository's update lock.
+
+Its terminal `soak.jsonl` record is **FAIL: namespace traffic counter/budget
+safety stop**, after **19,780.376 seconds (5h29m40s)**. Sampled non-loopback RX+TX
+reached 2,176,256,252 bytes against the 2,147,483,648-byte stop. This shared
+namespace counter includes unrelated traffic; it is neither node-only usage nor
+a hard quota. The stop does not demonstrate node resource exhaustion, but three
+real body RPC failures prevent describing the observation as measurement-only.
+No 24-hour/72-hour PASS or planned restart coverage was achieved: **zero
+restarts**, before the first six-hour restart.
+
+The finite observation recorded 325 successful samples, 164 matching-height
+hash comparisons and 164 external tip observations (163 lag zero, one lag -1).
+These asynchronous explorer checks are not independent full-consensus validation
+or continuous freshness proof. Selected height advanced 971,166 → 971,205.
+The monitor killed the child at the traffic stop; a separate stopped reopen
+verified 52,560 rows, retained range 918,646..971,205, unchanged checkpoint and
+protection at 971,157, and unbound guardian identity. That is reopen evidence,
+not completion of the planned graceful/abrupt restart schedule.
+
+Body retrieval succeeded in **30/33 scheduled attempts**, not 325/328. Failures at
+elapsed 2,511.911, 3,113.281 and 7,942.498 seconds returned retryable RPC -32012,
+unavailable/deadline. Later body observations succeeded without restart at
+3,715.679 and 8,542.781 seconds. The script scheduled attempts 600 seconds apart
+before making each call and followed the current tip; it did not promptly retry
+the same failed hash. These results show service recovery, not measured recovery
+latency, a production SLA or proof that every failed hash later became available.
+The retained telemetry does not identify a unique root cause.
+
+Peak sampled RSS was 27,948 KiB (VmHWM 32,308 KiB), with 16 descriptors, nine
+sockets, 25,433,055 disposable-directory bytes and at most four managed
+connections. No node resource-limit stop or retained corruption/fatal/store error
+was reported; samples are not universal bounds. The binary remains source
+**e0e4918e**, not the later clock-rejection fix or the final local-hardening source.
+Further duration acceptance needs a feasible isolation/budget plan or an explicit
+scoped acceptance decision; this result does not authorize a rerun or larger cap.
 
 The new `misc/readiness-fuzz.py` runner executes block then transaction targets
-sequentially. The planned threshold is 14,400 measured child CPU seconds each,
+sequentially. The threshold is 14,400 measured child CPU seconds each,
 with 300-second wall-time chunks and a six-hour wall limit per target. CPU
 accounting includes startup, corpus loading, sanitizer and system work; it is
 not pure mutation time. A wall/resource failure is not a CPU-hours pass.
@@ -613,8 +649,59 @@ non-dumpable child, and an independent disk error coinciding with exit.
 Any replacement campaign requires a new pinned snapshot and fresh CPU accounting;
 the failed attempt is never silently combined into a continuous pass.
 
-The source lock is independent of long campaigns. Their outcomes require
-separate logs and assessment; neither they nor the running soak are implied passes.
+The fresh retry started **October 13, 2026 at 02:26:31 UTC**, in
+`/tmp/public/cg3s-fuzz-4cpuh-retry-iBGtgO`. Its durable `campaign.jsonl` ends with
+**PASS, completed_targets=2**:
+
+| Target | Successful executions | Successful chunks | User CPU seconds | System CPU seconds | Wall seconds |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| block | 205,534,427 | 49 | 13,209.192928 | 1,481.661184 | 14,755.192 |
+| transaction | 384,926,978 | 49 | 13,912.996369 | 771.828113 | 14,755.136 |
+
+Each target exceeded four measured child CPU hours (about 4.08 hours). These are
+49 restarted chunks per target, not continuous runs or four hours of pure mutation.
+The retry copied the failed attempt's evolved corpus but carried over **no CPU
+time or execution credit** from that attempt or the separate smoke check. The
+first failed attempt above remains a failure.
+
+`snapshot.txt`, `previous-binary-provenance.txt`, `campaign.jsonl` and all 98 chunk
+logs pin the inputs and measurement. The reused AddressSanitizer binaries were built from
+**87217c8e7ae11b43bc91c4cf70c9bfe48f619389**, not the latest tree;
+the replacement script snapshot is from **27d30312**. Binary SHA-256 values:
+
+```text
+block       33f8646e54a824b2b89ad7053b2be9a37bbac7507809b5e86a189daeb4543050
+transaction 61b195f99fd65ddee0bae13029225646331ba6635cabfaaf1da8da0d55b0cafd
+```
+
+An independent read-only assessment summed the chunk logs, checked the recorded
+binary/script digests and AddressSanitizer symbols, and found no crash artifacts or sanitizer
+diagnostic markers. This closes the specified duration gate for these pinned
+targets, not a guarantee that sanitizer-detectable defects are absent or that
+current-source networking, persistence and guardian integration were fuzzed.
+The verdict relies on the durably flushed terminal records and chunk evidence, not an
+independently consumed managed-shell exit status.
+
+For reproduction only, prepare a **new** private directory with the pinned
+`block`/`transaction` binaries, `corpus/{block,transaction}`, and the three scripts
+listed in the snapshot. Never reuse or modify a completed campaign directory.
+The recorded invocation was:
+
+```sh
+python3 "$NEW_DIRECTORY/readiness-fuzz.py" --directory "$NEW_DIRECTORY" \
+  --cpu-seconds 14400 --chunk-seconds 300 --wall-seconds 21600
+```
+
+CPU affinity was `[0]`, nice level 10. Seed and input-size limits are in each
+chunk's recorded command; the manifest and evolved corpus matter for reproducing
+this scope. No new campaign is implied or authorized by this documentation.
+
+Finite local hardening at **abdc8b12** is independently reviewed within the
+intentional partial-validation contract. These terminal assessments do not
+identify another finite local source task. Deployment/integration acceptance
+remains pending, especially guardian approval and actual consumer commit
+integration, sustained body availability, and supported deployment/reference
+evidence.
 
 **Still not completed:**
 
@@ -623,10 +710,11 @@ separate logs and assessment; neither they nor the running soak are implied pass
 * Every worst admitted body shape under combined transport pressure; the measured
   real-body phases above cover a specific large fixture and reachable occupancy.
 * Kernel/cgroup OOM, exhaustive storage/power-loss faults, OS clock-jump campaigns,
-  long fuzz campaigns with sanitizers and broader property schedules.
+  broader sanitizer targets/current-source coverage and broader property schedules.
 * Restricted-hardware deployment envelope and automatic guardian commit safety.
 
-Report these as NOT RUN or pending, not implied passes from the shorter tests.
+Report these as NOT RUN, incomplete or pending as appropriate, not implied passes
+from the completed finite evidence.
 The independent reviewer found and required fixes for trickle-resistant capture
 deadlines and safety monitoring blocked behind reference I/O; both tools now have
 offline regressions. Reviews and tests reduce risk, not the residual trust in
