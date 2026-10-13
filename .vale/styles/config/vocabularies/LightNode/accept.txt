@@ -83,3 +83,14 @@ runbooks?
 rescans?
 systemd's
 reanchors?
+remeasurement
+[Cc]groups?
+inodes?
+[Nn]amespaces?
+namespace's
+tmpfs
+libFuzzer
+[Rr]egtest
+FDs
+prebootstrapped
+locktime

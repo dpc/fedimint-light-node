@@ -1,0 +1,12 @@
+{
+  "captured_utc": "2026-10-13T00:44:41.410726+00:00",
+  "source": "TLS electrum.blockstream.info:50002 blockchain.block.headers",
+  "start": 810432,
+  "count": 159696,
+  "first_hash": "00000000000000000001cbd9cd9511896fd86176de8dca70e8b58cf2fc72002f",
+  "last_hash": "000000000000000000012e81545920e3ba1edc1e690980a8c5af6e2818b5e270",
+  "sha256": "0d393a3042f676fdae5e2e6772622bae0b69973f0a19972feb660f04baebaafa",
+  "received_application_bytes": 25556949,
+  "limits": "300s worker process deadline, 32MB replies, 400000 bytes/reply, one request/second",
+  "trust": "Public header capture, not independent full-consensus validation"
+}

@@ -2,6 +2,7 @@
 //!
 //! Run each ignored test in its own process; see docs/resource-exercise.md.
 #![cfg(target_os = "linux")]
+use std::io::Read;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
@@ -10,7 +11,9 @@ use std::time::Instant;
 use bitcoin::block::Header;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::consensus::serialize;
-use bitcoin::{Amount, Block, Network, ScriptBuf, TxOut};
+use bitcoin::hashes::Hash;
+use bitcoin::hex::DisplayHex;
+use bitcoin::{Amount, Block, Network, OutPoint, ScriptBuf, TxOut, Txid, Witness};
 use fedimint_light_node::block_decode::{BlockDecodeLimits, decode_block};
 use fedimint_light_node::block_integrity::WitnessRules;
 use fedimint_light_node::header_store::HeaderStore;
@@ -177,6 +180,135 @@ fn validated_store_rollover() {
     }
     println!("total_ms={}", started.elapsed().as_millis());
     rss();
+}
+
+#[test]
+#[ignore = "external bounded header capture required; see docs/resource-exercise.md"]
+fn default_validated_store_rollover() {
+    // Authenticate the capture separately using its manifest. This is a sizing
+    // exercise rooted in explicitly trusted recent context, not a new trust path.
+    let path = std::env::var("READINESS_HEADERS").expect("READINESS_HEADERS");
+    let start: u64 = std::env::var("READINESS_START")
+        .unwrap_or_else(|_| "810432".into())
+        .parse()
+        .unwrap();
+    assert_eq!(start % 2016, 0);
+    let expected_bytes = (2016 + 3 * 52_560) * 80;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .unwrap()
+        .take(expected_bytes as u64 + 1)
+        .read_to_end(&mut bytes)
+        .unwrap();
+    assert_eq!(bytes.len(), expected_bytes);
+    let headers: Vec<Header> = bytes
+        .chunks_exact(80)
+        .map(|bytes| bitcoin::consensus::deserialize(bytes).unwrap())
+        .collect();
+    drop(bytes);
+    let anchor_height = start + 2015;
+    let anchor = StoreAnchor {
+        network: Network::Bitcoin,
+        height: anchor_height,
+        hash: headers[2015].block_hash(),
+        height_one_hash: bitcoin::consensus::deserialize::<Header>(
+            &include_bytes!("data/mainnet-headers-0-2035.raw")[80..160],
+        )
+        .unwrap()
+        .block_hash(),
+    };
+    let settings = StoreConfig {
+        header_capacity: NonZeroU64::new(52_560).unwrap(),
+        cache_bytes: NonZeroUsize::new(8 * 1024 * 1024).unwrap(),
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("default-validated.redb");
+    let mut store =
+        ValidatedHeaderStore::create(&path, settings, anchor, &headers[..2016]).unwrap();
+    let started = Instant::now();
+    let mut tip = anchor_height;
+    for (cycle, window) in headers[2016..].chunks(52_560).enumerate() {
+        for batch in window.chunks(144) {
+            store.select_suffix(tip, batch, u64::MAX).unwrap();
+            tip += batch.len() as u64;
+        }
+        assert_eq!(store.bounds().unwrap(), (tip + 1 - 52_560, tip));
+        assert_eq!(store.header(tip).unwrap(), headers[(tip - start) as usize]);
+        assert!(matches!(
+            store.header(tip - 52_560),
+            Err(StoreError::OutsideRetainedHistory)
+        ));
+        drop(store);
+        inspect(&path, 52_560, true);
+        let reopen = Instant::now();
+        store = ValidatedHeaderStore::open(&path, settings, anchor).unwrap();
+        assert_eq!(store.tip_context().unwrap().height(), tip);
+        println!(
+            "cycle={cycle} tip={tip} reopen_ms={} total_ms={} cache_bytes=8388608",
+            reopen.elapsed().as_millis(),
+            started.elapsed().as_millis()
+        );
+        rss();
+    }
+    // Compose real default state with admitted near-limit witness shapes and the
+    // eight response copies allowed by the RPC contract. This is not a running
+    // RPC server/pool saturation test; fixture memory remains in this process.
+    for many_items in [false, true] {
+        measure_witness_responses(many_items);
+        assert_eq!(store.tip_context().unwrap().height(), tip);
+    }
+}
+
+fn measure_witness_responses(many_items: bool) {
+    let mut block = genesis_block(Network::Bitcoin);
+    let mut transaction = block.txdata[0].clone();
+    transaction.input[0].previous_output = OutPoint::new(Txid::from_byte_array([1; 32]), 0);
+    let item_count = if many_items { 999_980 } else { 0 };
+    let blob = vec![0u8; 3_990_000 - item_count];
+    let mut items = vec![&[][..]; item_count];
+    items.push(&blob);
+    transaction.input[0].witness = Witness::from_slice(&items);
+    drop(items);
+    drop(blob);
+    block.txdata.push(transaction);
+    block.txdata[0].input[0].witness = Witness::from_slice(&[[0u8; 32]]);
+    let commitment = Block::compute_witness_commitment(&block.witness_root().unwrap(), &[0; 32]);
+    let mut script = vec![0x6a, 0x24, 0xaa, 0x21, 0xa9, 0xed];
+    script.extend_from_slice(commitment.as_byte_array());
+    block.txdata[0].output.push(TxOut {
+        value: Amount::ZERO,
+        script_pubkey: ScriptBuf::from_bytes(script),
+    });
+    block.header.merkle_root = block.compute_merkle_root().unwrap();
+    let requested = block.block_hash();
+    let payload = serialize(&block);
+    drop(block);
+    let decoded = decode_block(
+        &payload,
+        requested,
+        WitnessRules::Active,
+        BlockDecodeLimits {
+            max_payload_bytes: 4_000_000,
+            max_elements: 1_000_000,
+        },
+    )
+    .unwrap();
+    let result = serde_json::Value::String(serialize(&decoded).to_lower_hex_string());
+    let responses: Vec<_> = (0..8)
+        .map(|_| {
+            serde_json::to_vec(&serde_json::json!({"id": 1, "result": result, "error": null}))
+                .unwrap()
+        })
+        .collect();
+    println!(
+        "composed_witness_items={} payload_bytes={} weight={} response_copies=8 response_bytes={}",
+        item_count + 1,
+        payload.len(),
+        decoded.weight().to_wu(),
+        responses.iter().map(Vec::len).sum::<usize>()
+    );
+    rss();
+    std::hint::black_box((&decoded, &responses));
 }
 
 #[test]

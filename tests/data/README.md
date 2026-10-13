@@ -38,3 +38,19 @@ consensus-invalid bodies merely from valid linkage, work and timestamps.
 Their SHA-256 values, in the same order, are
 `23c2cc5f0feed363a28906c3555378956d4710e5d7ada07a7e6fb6733271be86`
 and `419278117f953998d807df78055ffb7072905f012013f242f69578c6e7bb33f3`.
+
+## Core shared-check vectors
+
+`core-shared/` contains a 227-byte Core-generated regtest block, a changed
+coinbase locktime (bad transaction Merkle root), and a changed coinbase witness
+reserved value (bad witness commitment). On October 13, 2026,
+`misc/core-shared-fixtures.py` generated the block in one isolated Core v31.1.0
+instance and submitted both mutations followed by the valid block to a second
+fresh instance. Both had networking and P2P listening disabled; RPC bound only
+loopback. No live transactions were submitted. The manifest records exact
+Core decisions, binary and fixture digests, and the block hash.
+
+The library matches those three **shared mechanical body checks** with active
+witness rules. This is not a mainnet header test, an independent mainnet node,
+or full-consensus equivalence. Regenerating produces a new timestamp/hash and
+requires updating the manifest and reviewing the captured decisions.

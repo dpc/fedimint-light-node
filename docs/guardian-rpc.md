@@ -189,6 +189,12 @@ independent-source proof or production-readiness certification.
 
 ## Recorded read-only smoke
 
+The [subsequent default-scale campaign](readiness-evidence.md) identified a
+protocol-version defect behind the repeated legacy-alert failures below.
+Successful retry/warmup alone did not rule out that interoperability bug.
+Advertising 70013 instead of 70012 avoids Core's final-alert trigger without
+accepting alert payloads; the subsequent bounded mainnet run reached four peers.
+
 On October 13, 2026 UTC, a disposable 144-header store bootstrapped at 971152.
 The CLI visibly advanced to 971158, then 971159; reopening preserved checkpoint
 and protection at 971152. Bitcoin Core CLI v31.1.0 successfully queried status,

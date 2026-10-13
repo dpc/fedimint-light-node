@@ -4,6 +4,13 @@ The mainnet service uses Bitcoin v1 framing, `rust-bitcoin` encoding and Tokio
 sockets on the caller's runtime. Discovery is an availability mechanism, not a
 vote, checkpoint source or proof of honest service.
 
+The client advertises protocol 70013. Advertising 70012 caused modern Bitcoin
+Core peers to send their final legacy `alert`, which this narrow parser correctly
+rejects. The version change avoids that compatibility trigger; it does not admit
+alerts, weaken framing, or enable transaction inventory relay. Optional BIP133
+fee-filter messages remain bounded and ignored. See the
+[readiness evidence](readiness-evidence.md) for the live diagnosis and remeasurement.
+
 ## Selection and resources
 
 By default the pool grows to four connections: three stable slots and one

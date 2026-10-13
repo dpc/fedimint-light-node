@@ -1,0 +1,24 @@
+{
+  "core_version": "Bitcoin Core daemon version v31.1.0 bitcoind",
+  "binary_sha256": "2bd94aa3ec2deec7604ba37be841bdffccf1b02ec08d56fee8398e1a77930a60",
+  "network": "regtest, networkactive=0, listen=0, no real transactions",
+  "hash": "79f0c3cd0a4d950f0692219917fa1de8c8b59b7afd97bb624596db73fc5c890c",
+  "scope": "shared body Merkle/witness checks only, not full-consensus equivalence",
+  "vectors": {
+    "valid": {
+      "sha256": "3d08ca749c4d8e832b1cd588215752b7926d72a250a973afd581c24fbaefe27a",
+      "bytes": 227,
+      "core_submitblock": null
+    },
+    "bad-merkle": {
+      "sha256": "a18fe1770646ebac622316eab7a8cf7eeb81e6121317edc839bb11d72a5088c8",
+      "bytes": 227,
+      "core_submitblock": "bad-txnmrklroot"
+    },
+    "bad-witness": {
+      "sha256": "ebe22a0e5bdd6468ced035dc96da3752add9907d00b66b2d7e59db0f9cd11d6e",
+      "bytes": 227,
+      "core_submitblock": "bad-witness-merkle-match"
+    }
+  }
+}

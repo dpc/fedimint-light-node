@@ -1,5 +1,10 @@
 # Local release resource and failure exercise
 
+The newer [readiness evidence](readiness-evidence.md) adds a recent, fully
+contextual 52,560-row/8 MiB replay, composed witness/response pressure, bounded
+fault campaigns and real-network observations. The older measurements below
+remain distinct; their raw rows and small cache do not substitute for that work.
+
 This is a reproducible **library/test-process measurement**, not a production
 memory limit or a complete guardian-backend sizing result. It exercises the
 implemented bounded-history backend without public services. In particular,

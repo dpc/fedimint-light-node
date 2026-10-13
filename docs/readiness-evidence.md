@@ -1,0 +1,306 @@
+# Readiness evidence and remaining gates
+
+**These bounded experiments found and fixed a real peer interoperability defect.
+They do not certify production readiness.** Default-scale storage, composed body
+memory pressure, process crashes, actual isolated ENOSPC, allocation failure and
+short coverage-guided fuzz campaigns now have reproducible evidence. Automatic
+guardian commit protection remains absent; the [operations limitations](operations.md)
+still apply. Full Bitcoin consensus remains outside this library's contract.
+
+## What changed in peer availability
+
+The earlier mainnet run advertised protocol 70012. Bitcoin Core v30.0 sends its
+final legacy alert at negotiated versions at or below 70012
+(`src/net_processing.cpp`, final-alert branch). The strict parser rejects `alert`
+before allocating its payload. Thus ordinary Core peers could fail exploration,
+followed by the pool correctly falling back to its one maintained peer. Candidate
+count did not mean eligible or reachable peers. Retry/warmup success was not proof
+that the original failures were merely transient.
+
+Advertising **70013** avoids that trigger. BIP133 fee filtering is optional, and
+the parser already bounds and ignores those messages. Alert admission, unknown
+command rejection, connection cap, lease cleanup, body bounds, useful-service
+promotion, source/prefix diversity and backoff did not change. A scripted Core
+threshold regression checks the outbound version, fee-filter handling and a
+subsequent header response. A second test sends only a huge alert envelope and
+checks rejection without waiting for payload.
+
+Primary protocol references:
+
+```text
+https://github.com/bitcoin/bitcoin/blob/v30.0/src/net_processing.cpp
+https://github.com/bitcoin/bips/blob/master/bip-0133.mediawiki
+```
+
+## Host and measurement boundaries
+
+Recorded October 13, 2026 UTC on Linux/NixOS, AMD Ryzen 9 7950X3D, approximately
+62 GiB physical RAM; Rust 1.98.1. No 512 MiB/2 GiB/two-CPU deployment envelope was
+imposed or demonstrated. Cgroup controller files were unavailable in this
+environment. Linux `/proc` and GNU `time` report process observations, not a
+library heap limit or page-cache budget. Their RSS readings can differ.
+
+Release CLI SHA-256 used by the live experiments:
+
+```text
+7b9c2448022453ea1f1585fb21f86faa2ef10df0e7ed197da1da46bc94b27391
+```
+
+Build and experiment artifacts are deliberately not dependencies of normal CI.
+The large public header capture is not committed. The small Core body fixtures
+and their provenance are committed under `tests/data/core-shared/`.
+
+## Default-scale retained state and body pressure — PASS
+
+The [header manifest](readiness-headers.json) pins 159,696 recent mainnet headers
+at heights 810432–970127, captured over certificate-checked TLS Electrum with
+25,556,949 application reply bytes. The revised capture completed in 90 seconds
+under a separate 300-second process watchdog, with per-reply and aggregate
+allocation bounds. The fixture is evidence, never new production anchor authority.
+The initial capture preceded the watchdog fix; its identical digest alone is not
+evidence that the old tool enforced a deadline against trickling responses.
+
+The replay explicitly trusts context 810432–812447, then contextually validates
+157,680 descendants. It fills the 52,560-row window and replaces it completely
+twice, with **8 MiB redb cache**, 144-header transactions and all 52,560 context
+records retained. Each cycle closes, inspects, reopens and checks pruning/tip.
+Wall-clock freshness is disabled for replay; linkage, expected targets, PoW and
+the implemented contextual rules are not bypassed.
+
+| Observation | Fill | First replacement | Second replacement |
+|---|---:|---:|---:|
+| Selected height | 865007 | 917567 | 970127 |
+| Header/context rows each | 52560 | 52560 | 52560 |
+| Apparent database bytes | 40898560 | 40898560 | 40894464 |
+| Allocated filesystem bytes | 28258816 | 30409216 | 30405120 |
+| Current RSS KiB, before composed body phase | 25088 | 25696 | 25696 |
+
+Encoded live values were 4,415,040 header bytes plus 8,830,080 context bytes.
+Database inspection uses a separate 1 MiB cache after closing the measured store,
+as in the older exercise; replay and reopening use 8 MiB. The full capture and
+decoded fixture vector contribute to the test-process RSS. Do not quote this as
+the minimal resident footprint of a running node.
+
+With that default validated store still open, the test admits two synthetic
+witness shapes and holds eight serialized JSON response copies:
+
+| Shape | Body bytes | Weight | Eight response bytes | `/proc` high-water RSS KiB |
+|---|---:|---:|---:|---:|
+| One large witness item | 3990580 | 3992188 | 63849544 | 123052 |
+| 999981 witness items | 3990584 | 3992192 | 63849608 | 133772 |
+
+The second shape approaches the one-million-element admission limit; both
+approach four-million weight units. They pass mechanical body checks with a
+real matching witness commitment, but are not mined, script-valid chain blocks.
+This is a **composed allocation exercise**, not eight actual blocked RPC clients,
+a maintained four-peer pool, or a maximum-RSS proof. Full simultaneous default
+state + four peers + adversarial body + actual RPC saturation remains a gap.
+GNU `time` reported 132,032 KiB peak, 16.63 seconds wall, 8.57 user and 4.60 system
+for the whole replay/composition process.
+
+Reproduce:
+
+```sh
+mkdir -p target/readiness
+nix develop -c python3 misc/capture-readiness-headers.py \
+  target/readiness/recent.raw --start 810432
+# Inspect the appended recent.raw.json; compare its SHA-256 with the committed manifest.
+nix develop -c python3 misc/resource-exercise.py --headers target/readiness/recent.raw
+```
+
+The capture refuses existing output and manifest paths. A timeout can leave a
+partial capture without a manifest; inspect and deliberately remove only your
+disposable artifact before retrying. The resource runner checks the supplied
+manifest digest. That checks integrity, not independent source truth.
+
+## Fault campaigns — bounded PASS, not exhaustive recovery
+
+`tests/readiness_faults.rs` uses disposable stores and real fixture headers:
+
+* **32 seeded SIGKILL schedules:** delays of 1–100 ms plus four longer schedules
+  that reach pruning. The child reports an acknowledgment after each successful
+  durable selection. Reopening must yield the last reported commit or its single
+  in-flight successor, with every retained row matching the known chain and
+  identity/protection unchanged. The recorded longer schedules reached tips
+  829, 1177, 814 and 992. This is process-kill evidence, not power-loss testing.
+* **Duplicate writer and read-only file:** ownership rejects a second writer;
+  mode-0400 rejects writer open, then normal permissions permit unchanged reopen.
+  This test requires an unprivileged account, like the supported service;
+  root/CAP_DAC_OVERRIDE is not a valid permission-test environment.
+* **Actual byte and inode ENOSPC:** separate unprivileged user/mount namespaces,
+  private 8 MiB tmpfs with 64 inodes, no host filesystem exhaustion. Byte filling
+  forced a store-update error; inode filling refused a new store. Removing only
+  disposable fillers allowed exact old-chain reopen (tip zero) in both runs.
+  The test contract also permits explicit reopen refusal, never automatic reset.
+  These two successful reopens do not establish universal recovery.
+* **Allocation abort:** a child under 64 MiB `RLIMIT_AS` acknowledges one commit,
+  then requests 128 MiB and aborts with SIGABRT. Reopen preserves that commit and
+  floor. This is allocator/address-space failure, **not a kernel cgroup OOM kill**.
+
+Run the normal permission/ownership tests and selected finite crash campaigns:
+
+```sh
+nix develop -c cargo test --release --test readiness_faults
+nix develop -c cargo test --release --test readiness_faults -- \
+  --ignored --exact seeded_kill_reopen_keeps_committed_chain --nocapture
+nix develop -c cargo test --release --test readiness_faults -- \
+  --ignored --exact address_limit_abort_preserves_acknowledged_commit --nocapture
+```
+
+For ENOSPC, first compile the test executable with `cargo test --release --test
+readiness_faults --no-run --message-format=json`; use its `compiler-artifact`
+executable path as `TEST_BINARY`. Run **only in a private disposable mount**:
+
+```sh
+MOUNT=$(mktemp -d "$PWD/target/readiness/private-tmpfs-XXXXXX")
+# MODE=bytes, then repeat with MODE=inodes. Never fill a host filesystem.
+MODE=bytes
+unshare --user --map-root-user --mount --propagation private sh -eu -c '
+  mount -t tmpfs -o size=8m,nr_inodes=64 tmpfs "$1"
+  READINESS_FAULT_DIR="$1" READINESS_FAULT_MODE="$2" \
+    "$3" --ignored --exact constrained_filesystem_failure --nocapture
+' sh "$MOUNT" "$MODE" "$TEST_BINARY"
+rmdir "$MOUNT" # The private mount disappeared with its namespace.
+```
+
+Each filler itself is capped at 16 MiB or 256 files if an operator forgets the
+mount; that is a safety fallback, not permission to run against valuable state.
+Existing normal tests retain corrupt/truncated metadata, interrupted publication,
+network truncation/cancellation and validation-clock coverage. This campaign did
+not reproduce every power-loss ordering, every corruption location, real kernel
+OOM, or OS clock jumps.
+
+## Coverage-guided fuzzing and independent shared checks — PASS within scope
+
+The isolated [fuzz workspace](../fuzz/README.md) adds block and transaction
+targets plus deterministic fixture seed generation. `cargo-fuzz 0.13.1` with
+libFuzzer coverage counters and `--sanitizer none` ran finite 61-second campaigns:
+
+| Target | Executions | Final coverage counters / features | Peak reported RSS |
+|---|---:|---:|---:|
+| Block, including short headers | 4020620 | 534 / 1073 | 65 MiB |
+| Transaction | 5634194 | 357 / 1348 | 65 MiB |
+
+No crash was found. The block rerun reused its earlier evolved corpus; execution
+counts are observations, not a deterministic performance guarantee. An initial
+block campaign ran 3,707,074 iterations before the short-header target improvement.
+Seeds were 604870434 and 3402604921. Limits were 512 MiB libFuzzer RSS, five seconds
+per input, and maximum inputs of 4,000,000/400,000 bytes. These are short campaigns,
+not four CPU-hours per target or exhaustive coverage.
+
+A separate block campaign with AddressSanitizer enabled completed 1,425,882
+executions in 61 seconds with no crash (837 coverage counters, 1,744 features,
+378 MiB peak reported RSS). It used seed 604870434 and the same input, timeout and
+RSS limits. This short sanitizer run does not cover the transaction target or
+replace the longer campaigns.
+
+Separately, Core v31.1.0 generated a tiny regtest witness block with all P2P
+networking disabled. A second fresh Core instance rejected changed Merkle and
+witness data with `bad-txnmrklroot` and `bad-witness-merkle-match`, then accepted
+the original. The checked-in fixtures let normal CI verify that this library
+agrees on those **shared body rules only**. See `tests/data/README.md` and:
+
+```sh
+nix develop -c python3 misc/core-shared-fixtures.py \
+  --bitcoind /path/to/bitcoind --output target/readiness/new-core-fixtures
+nix develop -c cargo test --test core_shared_fixtures
+```
+
+The generator has a 120-second owned-process watchdog, uses private regtest state
+and loopback RPC, and stops children before deleting their state. Regtest
+generation is not a submitted live transaction. This does not provide an
+independent synchronized mainnet Core reference.
+
+## Read-only mainnet smoke — mixed outcomes
+
+A fresh **default 52,560-header/8 MiB** store bootstrapped at height 971157 in
+9.90 seconds (GNU `time` peak 19,256 KiB). Unlike the replay, bootstrap authenticates
+historical rows into its checkpoint; it does not retroactively contextually
+validate every retained historical row.
+
+A finite 600-second outbound-only run reached **four maintained connections**,
+advanced selected height to 971165, completed ten matching-height external
+reference samples and one 1,577,384-byte RPC block, and recovered after one TERM
+and one SIGKILL restart. Checkpoint and protection remained 971157. There were no
+recorded RPC sample failures. The same namespace's non-loopback RX+TX delta was
+56,028,882 bytes; that includes unrelated traffic and possible double counting.
+Peak sampled RSS was 20,944 KiB, VmHWM 26,020 KiB, and open FDs 16.
+
+That first smoke preceded the independent-monitor fix. A subsequent 180-second
+run of the fixed monitor also passed: four peers, three references, one body,
+two restarts, zero sample failures, sampled RSS 22,472 KiB, VmHWM 26,936 KiB, FDs
+16 and namespace traffic 103,858,696 bytes (including concurrent build downloads).
+These observations do not establish a 24-hour or 72-hour soak.
+
+The next 180-second run, using the added lag and connection-count telemetry,
+**failed** its evidence gate: it reached four peers and obtained two matching-height
+hashes and one zero-lag observation, but its only scheduled body request returned
+a retryable unavailable/deadline error. It completed two successful samples and
+two restarts; the failed sample left zero successful bodies. The next body attempt
+was scheduled ten minutes later, beyond this run's duration. This is a recorded
+availability failure, not a pass inferred from the earlier runs.
+
+A separate **720-second telemetry run passed** with the same binary and safety
+limits: twelve successful samples, six matching-height hash references, six
+zero-height-lag observations, two 1,479,174-byte body responses, four maintained
+peers and two restarts (TERM then SIGKILL). There were no sample failures.
+Selected height remained 971166; checkpoint/protection remained 971157, so this
+run demonstrates continued service and restart recovery, not new advancement.
+The first post-restart samples succeeded approximately 30 and 31 seconds after
+launch. Sampled RSS peaked at 21,644 KiB, VmHWM at 26,500 KiB, FDs at 16 and
+sockets at nine. Namespace traffic was 63,054,377 bytes, including other host
+activity. Builds and a local CI run overlapped part of this experiment.
+The longer observation does not erase the preceding failed body sample.
+
+`mempool.space` matching-height hashes are external observations, not an
+independent full-validator audit; the operator also participates in default
+bootstrap. Native block fetching uses the same library and is not independent
+validation either. No live transactions or public listeners were used.
+
+## Soak supervision and still-open gates
+
+The finite supervisor reads a prebootstrapped **disposable, unbound** default
+store. Credentials are created exclusively, mode 0600, and removed after normal
+completion. It binds RPC to loopback on an ephemeral port, makes at most one
+external hash request per minute and one block request per ten minutes, and
+alternates TERM/SIGKILL restarts at the configured interval. Source, binary and
+script digests, samples, final identity, CPU/RSS/FD/socket/disk observations and
+outcome go to local reports. It never submits transactions or reanchors.
+
+```sh
+# D is a NEW private directory with its own newly bootstrapped chain.redb.
+nix develop -c python3 misc/readiness-soak.py \
+  --binary target/release/fedimint-light-node --directory "$D" \
+  --seconds 86400 --byte-stop 2147483648 --restart-seconds 21600
+```
+
+Use a new report directory/store for each run; do not delete existing reports to
+hide earlier failures. A 72-hour command uses `--seconds 259200` and an explicitly
+chosen total byte stop (at most 6 GiB); the script does not enforce a rolling
+per-day quota. Run it as a foreground, harness-managed command, never detached.
+
+The separate monitor samples every 250 ms and kills only the owned node on
+traffic, RSS (1 GiB), FD (256), disk (2 GiB), queue or monitoring errors. It remains
+active if an external HTTP response stalls. Namespace counters are conservative
+and can stop a run because of other programs. These are **sampled stop thresholds
+with overshoot**, not hard packet/memory/disk quotas; scheduler delays and in-flight
+traffic can exceed a threshold before termination. The outer watchdog kills the
+owned process group at duration plus 60 seconds, including blocked resolver work.
+It can leave an incomplete report or credential file; such a run is NOT PASS.
+Healthy sync logs are sampled once per minute, errors retained, with a 16 MiB cap.
+
+**Not completed by the short-stage evidence:**
+
+* Actual 24-hour and 72-hour completed soaks with sustained recovery/lag evidence.
+* Independent, already synchronized mainnet Core comparison.
+* Simultaneous default state, four maintained peers, worst admitted body shapes
+  and actual maximum RPC writer/queue saturation.
+* Kernel/cgroup OOM, exhaustive storage/power-loss faults, OS clock-jump campaigns,
+  long fuzz campaigns with sanitizers and broader property schedules.
+* Restricted-hardware deployment envelope and automatic guardian commit safety.
+
+Report these as NOT RUN or pending, not implied passes from the shorter tests.
+The independent reviewer found and required fixes for trickle-resistant capture
+deadlines and safety monitoring blocked behind reference I/O; both tools now have
+offline regressions. Reviews and tests reduce risk, not the residual trust in
+[SPEC-chain-trust](../specs/SPEC-chain-trust.md).

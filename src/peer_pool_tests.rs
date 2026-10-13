@@ -68,6 +68,83 @@ async fn acquire(pool: &mut PeerPool) -> PeerConnection {
 }
 
 #[tokio::test]
+async fn core_legacy_alert_threshold_does_not_disconnect_modern_handshake() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        let (mut stream, addr) = listener.accept().await.unwrap();
+        let NetworkMessage::Version(local) = read(&mut stream).await else {
+            panic!("expected version");
+        };
+        let mut version = VersionMessage::new(
+            ServiceFlags::NETWORK | ServiceFlags::WITNESS,
+            1,
+            Address::new(&addr, ServiceFlags::NONE),
+            Address::new(&addr, ServiceFlags::NONE),
+            5,
+            "/core-threshold-fixture/".into(),
+            0,
+        );
+        version.version = 70016;
+        send(&mut stream, NetworkMessage::Version(version))
+            .await
+            .unwrap();
+        // Model Core's <=70012 final-alert behavior without copying the obsolete
+        // signed payload. Admission must reject its envelope without reading it.
+        if local.version <= 70012 {
+            let mut envelope = [0; 24];
+            envelope[..4].copy_from_slice(&Network::Bitcoin.magic().to_bytes());
+            envelope[4..16].copy_from_slice(b"alert\0\0\0\0\0\0\0");
+            envelope[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
+            stream.write_all(&envelope).await.unwrap();
+        }
+        assert_eq!(local.version, 70013);
+        send(&mut stream, NetworkMessage::FeeFilter(1000))
+            .await
+            .unwrap();
+        send(&mut stream, NetworkMessage::Verack).await.unwrap();
+        assert_eq!(read(&mut stream).await, NetworkMessage::Verack);
+        send(&mut stream, NetworkMessage::Headers(Vec::new()))
+            .await
+            .unwrap();
+        stream
+    });
+    let mut pool = PeerPool::new(&[addr], PeerPoolConfig::manual_only()).unwrap();
+    let mut peer = acquire(&mut pool).await;
+    assert!(matches!(
+        receive(&mut peer.stream, &mut 1_000_000).await.unwrap(),
+        Message::Headers(headers) if headers.is_empty()
+    ));
+    pool.release(peer, false);
+    let _socket = task.await.unwrap();
+    pool.shutdown().await;
+}
+
+#[tokio::test]
+async fn legacy_alert_still_rejected_before_payload_read() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut envelope = [0; 24];
+        envelope[..4].copy_from_slice(&Network::Bitcoin.magic().to_bytes());
+        envelope[4..16].copy_from_slice(b"alert\0\0\0\0\0\0\0");
+        envelope[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
+        stream.write_all(&envelope).await.unwrap();
+        stream
+    });
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let _socket = task.await.unwrap();
+    let mut remaining = usize::MAX;
+    assert!(matches!(
+        timeout(Duration::from_secs(1), receive(&mut stream, &mut remaining))
+            .await
+            .unwrap(),
+        Err(SyncError::UnsupportedCommand(command)) if command == *b"alert\0\0\0\0\0\0\0"
+    ));
+}
+
+#[tokio::test]
 async fn four_real_sockets_reuse_keepalive_during_lease_and_joined_shutdown() {
     let mut listeners = Vec::new();
     let mut addresses = Vec::new();

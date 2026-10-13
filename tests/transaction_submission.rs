@@ -131,7 +131,7 @@ async fn handshake(listener: &TcpListener) -> TcpStream {
         panic!("expected version")
     };
     assert!(!local.relay);
-    assert_eq!(local.version, 70012);
+    assert_eq!(local.version, 70013);
     send(
         &mut stream,
         NetworkMessage::Version(version(addr, true, true)),

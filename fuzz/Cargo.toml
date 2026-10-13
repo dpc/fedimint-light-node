@@ -1,0 +1,30 @@
+[package]
+name = "fedimint-light-node-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+bitcoin = "0.32.102"
+fedimint-light-node = { path = ".." }
+libfuzzer-sys = "0.4"
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "block"
+path = "fuzz_targets/block.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "transaction"
+path = "fuzz_targets/transaction.rs"
+test = false
+doc = false
+bench = false

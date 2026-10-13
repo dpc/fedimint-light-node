@@ -38,8 +38,11 @@ pub(crate) async fn handshake_inner(
     version.relay = false;
     {
         // rust-bitcoin's constructor still defaults to 70001. Advertise the
-        // witness-era protocol we actually use, without opting into wtxid relay.
-        version.version = 70012;
+        // witness-era protocol plus optional BIP133 fee filtering, without opting
+        // into wtxid relay. Core sends its final legacy alert to versions <=70012;
+        // advertising that version makes our strict alert rejection disconnect
+        // otherwise useful peers. We still reject alert payloads before allocation.
+        version.version = 70013;
     }
     send_bounded(&mut stream, NetworkMessage::Version(version), sent).await?;
     let mut remote = None;
