@@ -1,0 +1,12 @@
+{
+  "height": 934996,
+  "block_hash": "0000000000000000000045cb955630fcadb996eb19adb57e3b6653ea827b0c14",
+  "bytes": 3833822,
+  "weight": 3993659,
+  "transactions": 347,
+  "witness_items": 1272,
+  "sha256": "5018f2a401a852885a66531908e92d58c03fe86430473baab372fee23e7181c2",
+  "source": "https://mempool.space/api/block/0000000000000000000045cb955630fcadb996eb19adb57e3b6653ea827b0c14/raw",
+  "captured_utc": "2026-10-13T01:13:51.858162+00:00",
+  "trust": "External public fixture; its exact header matches retained validated replay state. Production body acceptance remains unchanged."
+}

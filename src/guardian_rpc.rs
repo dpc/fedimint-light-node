@@ -119,6 +119,10 @@ impl GuardianRpc {
                         let send = send.clone();
                         let slow_send = slow_send.clone();
                         connections.spawn(async move {
+                            #[cfg(all(test, target_os = "linux"))]
+                            let _accepted = crate::readiness_observer::enter(
+                                crate::readiness_observer::Counter::Accepted,
+                            );
                             let _ = timeout(Duration::from_secs(14),
                                 crate::rpc_http::serve(stream, authorization, send, slow_send)).await;
                         });
@@ -179,6 +183,8 @@ impl GuardianRpc {
                 let Some(mut pending) = request else {
                     return Ok(());
                 };
+                #[cfg(all(test, target_os = "linux"))]
+                crate::readiness_observer::queue(pending.request.is_network(), false);
                 if pending.reply.is_closed() {
                     canceled = canceled.saturating_add(1);
                     continue;

@@ -3,7 +3,9 @@
 **These bounded experiments found and fixed a real peer interoperability defect.
 They do not certify production readiness.** Default-scale storage, composed body
 memory pressure, process crashes, actual isolated ENOSPC, allocation failure and
-short coverage-guided fuzz campaigns now have reproducible evidence. Automatic
+short coverage-guided fuzz campaigns now have reproducible evidence. A later
+offline campaign also measured real four-peer/RPC pressure and cancellation.
+Automatic
 guardian commit protection remains absent; the [operations limitations](operations.md)
 still apply. Full Bitcoin consensus remains outside this library's contract.
 
@@ -289,12 +291,119 @@ owned process group at duration plus 60 seconds, including blocked resolver work
 It can leave an incomplete report or credential file; such a run is NOT PASS.
 Healthy sync logs are sampled once per minute, errors retained, with a 16 MiB cap.
 
-**Not completed by the short-stage evidence:**
+## Actual transport pressure — PASS within reachable phases
+
+The ignored Linux library test
+`readiness_transport_tests::default_store_real_pool_and_rpc_pressure` uses the
+same validated 52,560-row replay and configured 8 MiB cache. It transfers that
+store into the real `HeaderSync` and `GuardianRpc`, with four loopback Bitcoin
+peers and unmodified RPC deadlines and acceptance checks. Fixture P2P request
+and handshake deadlines are explicitly one second, with long peer rotation.
+It does not
+inject RPC results, weaken PoW, or substitute a synthetic chain.
+
+The [mined body manifest](readiness-block.json) pins height 934996: 3,833,822 bytes,
+3,993,659 weight units, 347 transactions and 1,272 witness items. Remaining slack
+is 166,178 payload bytes and 6,341 weight units. This is a large real body,
+**not every worst-case admitted shape or the million-element limit**.
+
+The October 13 recovery run at `target/readiness/transport-recovery` passed in
+17.12 seconds, including replay; transport phases took 1,087 ms:
+
+| Natural observation | Accepted HTTP tasks | Blocked writers | Cheap / network queued | P2P sockets | RSS KiB |
+|---|---:|---:|---:|---:|---:|
+| Warmed owner | 0 | 0 | 0 / 0 | 4 | 41516 |
+| Eight successful body writers | 8 | 8 | 0 / 0 | 4 | 174892 |
+| Active body decoded and checked | 8 | 2 | 4 / 1 | 4 | 71696 |
+| All occupied clients canceled, cheap read recovered | 0 | 0 | 0 / 0 | 3 | 41820 |
+
+The active-body phase includes three idle sockets and one leased socket, not a
+fifth connection. Eight writers and full queues cannot coexist under the
+eight-task cap; these are separate reachable phases. Test-only observations
+record actual socket writes returning `Pending`, not merely unread clients.
+Both full queues reject surplus admitted requests with `-32014`. Successful
+responses drain to their exact expected bytes. Canceling eight occupied clients
+released tasks, queues and writers in 2 ms; the closed active lease explains the
+three remaining sockets. Shutdown joins owned tasks, then checks retained
+header/context row counts and reopens the unchanged selected hash and protection floor.
+
+Measurements include in-process fixture peers, one shared raw body, one expected
+JSON response, replay setup, test runtime and observation overhead. They are not
+library-only heap figures. The largest instrumented RSS sample was 174,892 KiB;
+the independent sampler observed 159,912 KiB RSS and 174,728 KiB high-water RSS.
+These separate Linux observations need not agree exactly. Peak sampled disk
+was 40,899,667 bytes; phase observations counted 40 descriptors including the
+observation directory, versus 39 in the external sampler. The runner pins two
+CPUs and uses sampled resource stops, not a hard deployment quota.
+
+The earlier `transport-first.log` failed an incorrect expected-height assertion,
+which was fixed. `transport-second` passed transport checks but its top-level-only
+disk sampler missed the nested temporary store. Its disk figure is invalid.
+The recovery runner enables recursive disk sampling, with a sparse-file safety
+regression; it does not overwrite either earlier result.
+
+To reproduce, acquire the external header/body fixtures into private bounded
+files, verify their manifests, build the release library test executable with
+`cargo test --release --lib --no-run --message-format=json`, then run:
+
+```sh
+nix develop -c python3 misc/readiness-transport.py \
+  --binary "$LIBTEST" --headers "$HEADERS" --block "$BLOCK" --directory "$NEW_REPORT"
+```
+
+## Extended campaigns — pending, not completed evidence
+
+A 24-hour soak began October 13, 2026 at 01:12:50 UTC, but was deliberately
+interrupted after about 1,055 seconds to release an orchestration lock that
+blocked unrelated source work. Preserve `target/readiness/soak-24h-SmrOTI`;
+this was not a completed soak or a node-availability verdict.
+
+That interruption exposed a supervisor defect: killing the outer managed command
+could leave its separately grouped worker and node running. The owned group was
+explicitly stopped. The corrected Linux wrapper arms parent-death termination
+before ordinary executable replacement and checks the original spawning parent.
+Every soak process edge uses it. Tests cover nested supervisor death, the
+pre-arm parent mismatch, and actual managed-tool cancellation. This guarantee
+requires long-lived spawning threads and trusted ordinary executables without
+credential changes; it is not a general descendant-process sandbox.
+
+The replacement started **October 13, 2026 at 01:36:18 UTC**, due October 14 at
+01:36:18 UTC plus its 60-second watchdog. Its private external directory is
+`/tmp/public/cg3s-soak-24h-tsxSc`, also recorded by
+`target/readiness/soak-24h-restarted-path`. It uses the unchanged release binary
+above, corrected pinned scripts, and a fresh copy of the stopped 720-second
+store, not a new bootstrap. Its manifest records all digests. The existing
+2 GiB namespace traffic stop, sampled RSS/FD/disk limits and six-hour alternating
+restart policy remain unchanged. There is no five-minute disconnect injection.
+The managed command uses shell `exec` from an independent directory, so the
+ongoing campaign does not hold the source repository's update lock.
+
+The new `misc/readiness-fuzz.py` runner executes block then transaction targets
+sequentially. The planned threshold is 14,400 measured child CPU seconds each,
+with 300-second wall-time chunks and a six-hour wall limit per target. CPU
+accounting includes startup, corpus loading, sanitizer and system work; it is
+not pure mutation time. A wall/resource failure is not a CPU-hours pass.
+Corpora persist between chunks; each target uses one CPU at nice level 10,
+512 MiB libFuzzer RSS, five seconds per input and the existing input-size limits.
+An independent monitor and owned outer deadline bound the campaign.
+
+The runner's short actual AddressSanitizer check passed both targets at a
+one-CPU-second threshold (two-second chunks): block 67,058 executions and
+3.059 child CPU seconds; transaction 90,837 executions and 3.042 child CPU
+seconds. Both pinned binaries contain `__asan_init`. This verifies the runner,
+not the planned long coverage. The long sequential campaign started October 13,
+2026 at about 01:43 UTC in `/tmp/public/cg3s-fuzz-4cpuh-47Mgc`, recorded by
+`target/readiness/fuzz-4cpuh-path`; its pinned snapshot includes binary, script
+and initial corpus digests. The source lock is independent of this campaign.
+Long campaign outcomes require separate logs and
+assessment; neither they nor the running soak are implied passes.
+
+**Still not completed:**
 
 * Actual 24-hour and 72-hour completed soaks with sustained recovery/lag evidence.
 * Independent, already synchronized mainnet Core comparison.
-* Simultaneous default state, four maintained peers, worst admitted body shapes
-  and actual maximum RPC writer/queue saturation.
+* Every worst admitted body shape under combined transport pressure; the measured
+  real-body phases above cover a specific large fixture and reachable occupancy.
 * Kernel/cgroup OOM, exhaustive storage/power-loss faults, OS clock-jump campaigns,
   long fuzz campaigns with sanitizers and broader property schedules.
 * Restricted-hardware deployment envelope and automatic guardian commit safety.

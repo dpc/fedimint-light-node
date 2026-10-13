@@ -40,6 +40,10 @@ mod peer_cache;
 mod peer_connection;
 mod peer_pool;
 pub mod peer_pool_config;
+#[cfg(all(test, target_os = "linux"))]
+mod readiness_observer;
+#[cfg(all(test, target_os = "linux"))]
+mod readiness_transport_tests;
 pub mod retained_range;
 mod rpc_http;
 #[cfg(test)]

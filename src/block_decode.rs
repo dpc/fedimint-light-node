@@ -51,12 +51,16 @@ pub fn decode_block(
 ) -> Result<Block, DecodeError> {
     preflight(payload, limits)?;
     let block = deserialize(payload)?;
+    #[cfg(all(test, target_os = "linux"))]
+    crate::readiness_observer::observe("decoded");
     check_block_integrity(
         &block,
         requested_hash,
         witness_rules,
         limits.max_payload_bytes,
     )?;
+    #[cfg(all(test, target_os = "linux"))]
+    crate::readiness_observer::observe("checked");
     Ok(block)
 }
 

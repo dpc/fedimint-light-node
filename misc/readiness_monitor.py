@@ -8,12 +8,13 @@ import os
 class SafetyMonitor:
     """Stop the node without waiting for foreground RPC or reference requests."""
 
-    def __init__(self, process, directory, traffic, byte_stop, overflow):
+    def __init__(self, process, directory, traffic, byte_stop, overflow, recursive=False):
         self.process = process
         self.directory = directory
         self.traffic = traffic
         self.byte_stop = byte_stop
         self.overflow = overflow
+        self.recursive = recursive
         self.error = None
         self.latest = {}
         self.peaks = {"rss_kib": 0, "hwm_kib": 0, "fd": 0, "sockets": 0, "disk_bytes": 0}
@@ -47,7 +48,7 @@ class SafetyMonitor:
                     "sockets": sockets,
                     "user_seconds": int(ticks[11]) / os.sysconf("SC_CLK_TCK"),
                     "system_seconds": int(ticks[12]) / os.sysconf("SC_CLK_TCK"),
-                    "disk_bytes": sum(p.stat().st_size for p in self.directory.iterdir() if p.is_file()),
+                    "disk_bytes": self.disk_bytes(),
                     "namespace_network_bytes": self.traffic(),
                 }
                 self.latest = snapshot
@@ -68,6 +69,18 @@ class SafetyMonitor:
                 child.kill()
                 child.wait(timeout=10)
                 return
+
+    def disk_bytes(self):
+        """Count disposable files, including nested test stores when requested."""
+        paths = self.directory.rglob("*") if self.recursive else self.directory.iterdir()
+        total = 0
+        for path in paths:
+            try:
+                if path.is_file():
+                    total += path.stat().st_size
+            except FileNotFoundError:
+                pass  # A disposable temporary file can disappear during sampling.
+        return total
 
     def start(self):
         self.thread.start()

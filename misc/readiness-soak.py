@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 
-from readiness_watchdog import run_owned
+from readiness_watchdog import owned_command, run_owned
 from readiness_monitor import SafetyMonitor
 
 
@@ -74,7 +74,7 @@ def main():
         "--fake-bitcoind", "--rpc-bind", "127.0.0.1:0", "--rpc-credentials", str(auth),
     ]
     initial = subprocess.run(
-        [binary, "--db", str(directory / "chain.redb"), "status"],
+        owned_command([binary, "--db", str(directory / "chain.redb"), "status"]),
         check=True, capture_output=True, text=True, timeout=30,
     ).stdout
     baseline = interface_bytes()
@@ -121,7 +121,7 @@ def main():
     def launch():
         if hashlib.sha256(pathlib.Path(binary).read_bytes()).hexdigest() != binary_digest:
             raise RuntimeError("binary changed during campaign; refusing mixed-version restart")
-        child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        child = subprocess.Popen(owned_command(command), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         thread = threading.Thread(target=read_lines, args=(child,), daemon=True)
         thread.start()
         return child, thread
@@ -265,7 +265,7 @@ def main():
             if reader is not None:
                 reader.join(timeout=2)
             final = subprocess.run(
-                [binary, "--db", str(directory / "chain.redb"), "status"],
+                owned_command([binary, "--db", str(directory / "chain.redb"), "status"]),
                 capture_output=True, text=True, timeout=30,
             )
             for prefix in ("network=", "checkpoint_height=", "checkpoint_hash=", "protected_height=",

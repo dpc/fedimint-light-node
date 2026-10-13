@@ -68,6 +68,8 @@ pub(crate) async fn serve(
             let result = match request {
                 Err(e) => Err(e),
                 Ok(request) => {
+                    #[cfg(all(test, target_os = "linux"))]
+                    let network_request = request.is_network();
                     let (reply, receive) = oneshot::channel();
                     let sender = if request.is_network() {
                         &slow_sender
@@ -80,6 +82,8 @@ pub(crate) async fn serve(
                             "busy; bounded operation queue is full",
                         )),
                         Ok(()) => {
+                            #[cfg(all(test, target_os = "linux"))]
+                            crate::readiness_observer::queue(network_request, true);
                             let mut extra = [0u8; 1];
                             tokio::select! {
                                 result = timeout(Duration::from_secs(11), receive) => match result {
@@ -223,11 +227,37 @@ async fn read_request(
 }
 
 async fn write(stream: &mut TcpStream, status: &str, body: &[u8]) -> io::Result<()> {
+    #[cfg(all(test, target_os = "linux"))]
+    let _writer = crate::readiness_observer::enter(crate::readiness_observer::Counter::Writer);
     let header = format!(
         "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\nWWW-Authenticate: Basic realm=\"guardian\"\r\n\r\n",
         body.len()
     );
     stream.write_all(header.as_bytes()).await?;
+    #[cfg(not(all(test, target_os = "linux")))]
     stream.write_all(body).await?;
+    #[cfg(all(test, target_os = "linux"))]
+    {
+        use std::future::Future;
+        use std::task::Poll;
+
+        let mut write = std::pin::pin!(stream.write_all(body));
+        let mut blocked = None;
+        std::future::poll_fn(|cx| match write.as_mut().poll(cx) {
+            Poll::Pending => {
+                if blocked.is_none() {
+                    blocked = crate::readiness_observer::enter(
+                        crate::readiness_observer::Counter::BlockedWriter,
+                    );
+                }
+                Poll::Pending
+            }
+            ready => {
+                blocked.take();
+                ready
+            }
+        })
+        .await?;
+    }
     stream.shutdown().await
 }

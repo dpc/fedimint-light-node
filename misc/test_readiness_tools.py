@@ -1,6 +1,8 @@
 """Offline regression tests for evidence-tool safety, not production node tests."""
 
 import importlib.util
+import json
+import os
 import pathlib
 import socket
 import subprocess
@@ -12,6 +14,7 @@ import unittest
 
 from readiness_watchdog import run_owned
 from readiness_monitor import SafetyMonitor
+import readiness_watchdog
 
 spec = importlib.util.spec_from_file_location(
     "capture", pathlib.Path(__file__).with_name("capture-readiness-headers.py")
@@ -21,6 +24,122 @@ spec.loader.exec_module(capture)
 
 
 class EvidenceSafety(unittest.TestCase):
+    def fuzz_failure(self, wall_seconds):
+        """Use tiny local executables to check fail-closed campaign accounting."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for name in ("block", "transaction"):
+                binary = root / name
+                binary.write_text(f"#!{sys.executable}\nraise SystemExit(7)\n")
+                binary.chmod(0o700)
+                corpus = root / "corpus" / name
+                corpus.mkdir(parents=True)
+                (corpus / "seed").write_bytes(b"x")
+            result = subprocess.run(
+                [sys.executable, str(pathlib.Path(__file__).with_name("readiness-fuzz.py")),
+                 "--directory", directory, "--cpu-seconds", "1",
+                 "--wall-seconds", str(wall_seconds), "--chunk-seconds", "1"],
+                capture_output=True, timeout=10,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            records = [json.loads(line) for line in (root / "campaign.jsonl").read_text().splitlines()]
+            self.assertEqual(records[-1]["outcome"], "FAIL")
+            self.assertEqual(records[-1]["completed_targets"], 1)
+            self.assertFalse(any(r.get("target") == "transaction" for r in records))
+            return records
+
+    def test_fuzz_failure_does_not_start_second_target(self):
+        records = self.fuzz_failure(30)
+        self.assertEqual(records[1]["exit"], 7)
+        self.assertEqual(records[-2]["successful_runs"], 0)
+
+    def test_fuzz_wall_budget_is_not_a_cpu_pass(self):
+        records = self.fuzz_failure(10)
+        self.assertIn("wall budget", records[-2]["reason"])
+        self.assertEqual(records[-2]["chunks"], 0)
+
+    def test_parent_death_before_arming_refuses_exec(self):
+        command = readiness_watchdog.owned_command(
+            [sys.executable, "-c", "raise SystemExit(42)"]
+        )
+        command[2] = "0"  # Never the real parent; model the pre-arm parent-death race.
+        result = subprocess.run(command, capture_output=True, timeout=3)
+        self.assertNotEqual(result.returncode, 42)
+        self.assertIn(b"parent exited", result.stderr)
+
+    def test_killed_supervisor_kills_worker_and_its_owned_child(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            node = root / "node"
+            worker = root / "worker"
+            child_code = (
+                "import os,pathlib,time;"
+                f"pathlib.Path({str(node)!r}).write_text(str(os.getpid()));"
+                "time.sleep(30)"
+            )
+            worker_code = (
+                "import os,pathlib,subprocess,sys,time;"
+                "from readiness_watchdog import owned_command;"
+                f"pathlib.Path({str(worker)!r}).write_text(str(os.getpid()));"
+                f"p=subprocess.Popen(owned_command([sys.executable,'-c',{child_code!r}]));"
+                "p.wait()"
+            )
+            supervisor = subprocess.Popen(
+                [sys.executable, "-c",
+                 "import sys;from readiness_watchdog import run_owned;"
+                 f"run_owned([sys.executable,'-c',{worker_code!r}],30)"],
+                env=dict(os.environ, PYTHONPATH=str(pathlib.Path(__file__).parent.resolve())),
+            )
+            pids = []
+            try:
+                deadline = time.monotonic() + 3
+                while not node.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(node.exists(), "nested child did not start")
+                pids = [int(worker.read_text()), int(node.read_text())]
+                supervisor.kill()  # No finally block or cooperative signal handler.
+                supervisor.wait(timeout=3)
+                def alive(pid):
+                    try:
+                        return pathlib.Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+                    except (FileNotFoundError, ProcessLookupError):
+                        return False
+                deadline = time.monotonic() + 3
+                while any(alive(pid) for pid in pids) and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertFalse(any(alive(pid) for pid in pids))
+            finally:
+                if supervisor.poll() is None:
+                    supervisor.kill()
+                    supervisor.wait()
+                for pid in pids:
+                    try:
+                        os.kill(pid, 9)
+                    except ProcessLookupError:
+                        pass
+
+    def test_recursive_monitor_includes_nested_store(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "nested").mkdir()
+            with (root / "nested" / "store").open("wb") as output:
+                output.truncate(2 * 1024**3 + 1)  # Sparse: no multi-GiB allocation.
+            process = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(30)"])
+            monitor = SafetyMonitor(
+                lambda: process, root, lambda: 0, 1, threading.Event(), recursive=True
+            )
+            try:
+                monitor.start()
+                process.wait(timeout=3)
+                self.assertEqual(process.returncode, -9)
+                self.assertIn("disk", monitor.error)
+                self.assertGreater(monitor.peaks["disk_bytes"], 2 * 1024**3)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+                monitor.close()
+
     def test_monitor_stops_child_while_foreground_is_blocked(self):
         with tempfile.TemporaryDirectory() as directory:
             process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
