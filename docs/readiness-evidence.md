@@ -179,6 +179,52 @@ rmdir "$MOUNT" # The private mount disappeared with its namespace.
 
 Each filler itself is capped at 16 MiB or 256 files if an operator forgets the
 mount; that is a safety fallback, not permission to run against valuable state.
+
+### Running-owner storage exhaustion
+
+The ignored Linux integration test
+`owner_enospc::actual_enospc_stops_owner_closes_clients_and_reopens_safely`
+in the `guardian_rpc` test executable composes actual byte ENOSPC with the
+running `HeaderSync`/`GuardianRpc` owner. It uses checked-in mainnet headers,
+one loopback scripted peer, a new disposable guardian-bound store and an
+acknowledged height-one protection checkpoint. Before releasing the peer's
+header reply it connects cheap-read, body-read and partial-HTTP clients, then
+fills only the explicitly checked private 8 MiB tmpfs (16 MiB hard filler cap).
+
+Finite local execution passed: the real durable selection returned
+`Header(Store(Storage(Io(... code: 28 ...))))`; the observer recorded the
+terminal latch, both queued reads and zero completed dispatches. The service
+returned a recovery-required error, joined its owner task, closed the peer and
+HTTP clients and stopped listening within the test deadlines. No successful
+JSON result reached the waiting clients. This sync-origin error has no owning
+RPC request, so the test does not require a particular RPC error code.
+After releasing filler space, reopen retained the exact selected range
+`0..=2`, anchor, guardian identity and acknowledged height/hash protection.
+The regression permits only coherent atomic selected prefixes with those
+safety records intact, or an explicit reopen refusal without deleting or
+replacing the store. This is finite failure-propagation evidence, not a
+power-loss test, a guardian commit protocol or a production-readiness verdict.
+
+Compile `cargo test --release --test guardian_rpc --no-run --message-format=json`
+and use its executable path as `TEST_BINARY`. Run without privilege escalation:
+
+```sh
+MOUNT=$(mktemp -d "$PWD/target/readiness/private-tmpfs-XXXXXX")
+READINESS_PARENT_MOUNT_NS=$(readlink /proc/self/ns/mnt) \
+unshare --user --map-root-user --mount --propagation private sh -eu -c '
+  mount -t tmpfs -o size=8m,nr_inodes=64 tmpfs "$1"
+  READINESS_FAULT_DIR="$1" "$2" --ignored --exact \
+    owner_enospc::actual_enospc_stops_owner_closes_clients_and_reopens_safely \
+    --nocapture
+' sh "$MOUNT" "$TEST_BINARY"
+rmdir "$MOUNT"
+```
+
+The test refuses the parent mount namespace and any path that is not the exact
+8 MiB tmpfs mount point. If unprivileged namespaces are unavailable, leave this
+environment-dependent test ignored; do not substitute a host filesystem or a
+privileged mount.
+
 Existing normal tests retain corrupt/truncated metadata, interrupted publication,
 network truncation/cancellation and validation-clock coverage. This campaign did
 not reproduce every power-loss ordering, every corruption location, real kernel
