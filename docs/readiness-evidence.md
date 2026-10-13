@@ -291,6 +291,54 @@ owned process group at duration plus 60 seconds, including blocked resolver work
 It can leave an incomplete report or credential file; such a run is NOT PASS.
 Healthy sync logs are sampled once per minute, errors retained, with a 16 MiB cap.
 
+## Adversarial witness exchange — finite regression PASS
+
+The offline, non-ignored unit regression
+`block_download::tests::adversarial_witness_transport_boundaries_and_fresh_exchange_recovery`
+extends the earlier composed-allocation evidence to real loopback TCP block
+exchanges. It runs the production `request_block`, frame admission, structural
+preflight and mechanical body checks. No production acceptance path changes.
+
+| Synthetic body | Body bytes | Weight | Aggregate elements |
+|---|---:|---:|---:|
+| One large non-coinbase witness item | 3990580 | 3992188 | 9 |
+| 999991 empty items plus one large item | 3990584 | 3992192 | 1000000 |
+
+Both include a separate coinbase reserved witness value and matching commitment.
+The second body reaches the configured one-million-element ceiling exactly,
+rather than merely approaching it. Each shape rejects a one-element-short
+decode budget, a one-byte-short payload budget, a one-byte-short aggregate wire
+budget, and a corrupt frame checksum with the expected error. For payload and
+wire-budget rejection, the peer sends **only the envelope and remains connected**:
+the client must reject without waiting for or receiving the body. Received-byte
+reservation is checked at each boundary.
+
+After each failure the test closes the rejected connection and performs a fresh
+successful exchange at exact byte/element budgets, checking the complete
+witness-preserving serialized response. This is fresh-exchange recovery, **not
+pool retry or service-state recovery**. The focused debug run passed all eight
+rejection/recovery pairs in 3.76 seconds. A separate release-binary run recorded
+0.19 seconds wall time and 31,508 KiB process high-water RSS with GNU `time -v`;
+the log is `target/readiness/adversarial-witness/release.log`, and the measured
+binary SHA256 is
+`e3aeba857ca564851f3285b48e7d1de658c2db4d68991b4ef95fa81b689088c4`.
+This is one sequential run of both shapes, not isolated per-shape memory usage.
+
+These synthetic headers are unmined. The test deliberately enters below
+`HeaderSync`'s retained-mainnet-header/PoW boundary; it does not inject them into
+the validated store or RPC service, relax header acceptance, or claim
+script/consensus validity. This closes a lower-layer transport regression gap,
+not the remaining combined default-store/four-peer/eight-HTTP extreme-shape
+measurement gap. It supplies no RSS ceiling, allocation count, or deployment
+guarantee. Fixture creation, peer buffers and returned bodies coexist in the
+test process.
+
+Reproduce without external fixtures or network access beyond loopback:
+
+```sh
+nix develop -c cargo test --lib adversarial_witness_transport -- --nocapture
+```
+
 ## Actual transport pressure — PASS within reachable phases
 
 The ignored Linux library test
