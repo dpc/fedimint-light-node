@@ -7,6 +7,9 @@ mod output;
 mod output_tests;
 mod recovery;
 mod rpc_credentials;
+mod startup;
+#[cfg(test)]
+mod startup_tests;
 mod transaction_input;
 
 use std::future::Future;
@@ -38,6 +41,7 @@ fn main() -> ExitCode {
 }
 
 fn run(options: Options) -> Result<()> {
+    options.check_command_scope()?;
     // No runtime or global signal/logging configuration is imposed by the library.
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -47,7 +51,11 @@ fn run(options: Options) -> Result<()> {
         // synchronous DB work and HTTP OS resolver jobs cannot be forcibly stopped.
         let shutdown = shutdown()?;
         tokio::pin!(shutdown);
-        operations::run(options, shutdown).await
+        if options.command.is_none() {
+            startup::run(options, shutdown).await
+        } else {
+            operations::run(options, shutdown).await
+        }
     });
     // Stop waiting for non-cancelable OS resolver jobs after bounded teardown.
     // Such jobs can outlive the runtime; the executable exits, the library does not.

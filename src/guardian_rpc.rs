@@ -22,7 +22,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio::time::{Instant, timeout};
 
-use crate::guardian_rpc_config::GuardianRpcConfig;
+use crate::guardian_rpc_config::{GuardianRpcConfig, RpcAuth};
 use crate::header_sync::HeaderSync;
 use crate::rpc_method::{RpcError, RpcRequest, dispatch, fee_value};
 
@@ -36,7 +36,7 @@ pub struct GuardianRpc {
     /// Exclusive pool and persistent store owner.
     sync: HeaderSync,
     /// Hash of the expected authorization header, compared in constant time.
-    authorization: [u8; 32],
+    authorization: Option<[u8; 32]>,
     /// Explicit synthetic schema permission.
     fake: bool,
     /// Explicit submission-only acknowledgement.
@@ -54,35 +54,48 @@ pub(crate) struct Pending {
 impl GuardianRpc {
     /// Validate policy, local readiness and fee round-trip before binding loopback.
     pub async fn bind(config: GuardianRpcConfig, sync: HeaderSync) -> io::Result<Self> {
-        if !config.bind.ip().is_loopback()
-            || config.username.is_empty()
-            || config.password.is_empty()
-            || config.username.contains(':')
-            || config.username.len() + config.password.len() > 512
-            || config
-                .username
-                .chars()
-                .chain(config.password.chars())
-                .any(char::is_control)
-        {
-            return Err(io::Error::other(
-                "RPC requires loopback and explicit bounded credentials",
-            ));
+        if !config.bind.ip().is_loopback() {
+            return Err(io::Error::other("RPC requires a numeric loopback address"));
         }
+        let authorization = match config.auth {
+            RpcAuth::NoAuth if config.allow_submission => {
+                return Err(io::Error::other(
+                    "Unauthenticated RPC forbids transaction submission",
+                ));
+            }
+            RpcAuth::NoAuth => None,
+            RpcAuth::Basic { username, password } => {
+                if username.is_empty()
+                    || password.is_empty()
+                    || username.contains(':')
+                    || username.len() + password.len() > 512
+                    || username
+                        .chars()
+                        .chain(password.chars())
+                        .any(char::is_control)
+                {
+                    return Err(io::Error::other(
+                        "RPC requires explicit bounded credentials",
+                    ));
+                }
+                Some(
+                    sha256::Hash::hash(
+                        format!(
+                            "Basic {}",
+                            base64::engine::general_purpose::STANDARD
+                                .encode(format!("{username}:{password}"))
+                        )
+                        .as_bytes(),
+                    )
+                    .to_byte_array(),
+                )
+            }
+        };
         let status = sync.status().map_err(io::Error::other)?;
         if status.stopped {
             return Err(io::Error::other("RPC owner requires explicit recovery"));
         }
         fee_value(sync.fee_policy()).map_err(|e| io::Error::other(e.message))?;
-        let authorization = sha256::Hash::hash(
-            format!(
-                "Basic {}",
-                base64::engine::general_purpose::STANDARD
-                    .encode(format!("{}:{}", config.username, config.password))
-            )
-            .as_bytes(),
-        )
-        .to_byte_array();
         Ok(Self {
             listener: TcpListener::bind(config.bind).await?,
             sync,

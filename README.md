@@ -8,6 +8,43 @@ headers, follow the greatest cumulative valid-header proof of work observed, and
 download complete blocks only when needed. Avoiding a full historical database
 and UTXO set makes independently operated guardian backends much less demanding.
 
+## Try it
+
+```sh
+cargo run
+```
+
+No setup command or credentials file is needed. Normal startup creates persistent
+mainnet state on first use, then synchronizes headers and serves **read-only,
+unauthenticated RPC on `127.0.0.1:18443`**. Later runs reopen that state; they never
+reset or bootstrap over an existing file. State lives at
+`$XDG_STATE_HOME/fedimint-light-node/chain.redb`, or
+`~/.local/state/fedimint-light-node/chain.redb` when XDG state home is unset.
+Startup prints the path, synchronization progress and ready-to-copy queries.
+
+After the first bootstrap finishes, query from another terminal:
+
+```sh
+bitcoin-cli -rpcconnect=127.0.0.1 -rpcport=18443 -rpcuser=demo -rpcpassword=demo getblockcount
+```
+
+The dummy credentials work with clients that insist on supplying credentials;
+the server does not check them. No Bitcoin Core daemon is needed. Any local
+process can query this endpoint; **do not forward its port**. Ctrl-C stops the
+node and preserves state. Initial bootstrap trusts configured HTTPS source
+agreement and needs Internet HTTPS, DNS and outbound Bitcoin P2P access; it can
+take minutes or fail when sources or peers are unavailable. This is not full
+Bitcoin validation or an automatic guardian integration.
+
+Optional overrides: `cargo run -- --db /trusted/path/chain.redb`,
+`cargo run -- --rpc-bind 127.0.0.1:0` for an available port, or
+`cargo run -- --rpc-credentials /private/rpc.auth` for authentication.
+`cargo run -- --fake-bitcoind` additionally enables the explicitly synthetic
+Core-status compatibility calls; they remain off by default. See the
+[RPC guide](docs/guardian-rpc.md) for curl queries, authentication, resource
+limits and explicit operational commands. With Nix, `nix run .` starts the same
+normal service, or use `nix develop -c cargo run`.
+
 ## Why this fits Fedimint
 
 Fedimint already delays consumption of Bitcoin blocks behind the observed tip.
@@ -33,7 +70,7 @@ pool discovers public peers, retains useful connections and rotates an
 exploratory connection. Manually configured peers and a manual-only mode remain
 available. Discovery supplies availability hints, never chain authority.
 
-An opt-in authenticated loopback [guardian RPC and mainnet demo](docs/guardian-rpc.md)
+The loopback [guardian RPC profile](docs/guardian-rpc.md), with optional authentication,
 supports the narrow Fedimint client profile. `--fake-bitcoind` explicitly enables
 synthetic Core status; it does not establish freshness or validation.
 There is **no full consensus validation, UTXO set, wallet-history service, inbound
@@ -62,9 +99,11 @@ See the [detailed comparison](docs/alternative-approaches.md) for primary source
 checked on October 12, 2026, configuration caveats and resource tradeoffs. This
 is not a measured performance ranking.
 
-## Try it
+## Explicit operations
 
-With Nix installed:
+The quickstart above runs bootstrap, synchronization and read-only RPC for you.
+For manual control, you can run the individual operations instead. For example,
+with Nix installed:
 
 ```sh
 nix build

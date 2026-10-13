@@ -339,6 +339,15 @@ fn bound_service_signal_and_kill_preserve_binding_and_exclude_online_backup() {
         .output()
         .unwrap();
     assert!(!result.status.success());
+    let result = command(&db)
+        .args(["--rpc-bind", "127.0.0.1:0"])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(
+        String::from_utf8_lossy(&result.stderr)
+            .contains("use serve with explicit guardian preflight")
+    );
 }
 
 #[test]
@@ -390,6 +399,139 @@ fn help_and_argument_errors_are_offline() {
         );
         assert!(!db.exists());
     }
+}
+
+#[test]
+fn rpc_configuration_conflicts_fail_before_creating_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("absent");
+    for prefix in [vec![], vec!["serve", "--standalone"]] {
+        for flags in [
+            vec!["--rpc-no-auth", "--rpc-credentials", "/nonexistent"],
+            vec!["--rpc-no-auth", "--allow-rpc-submission"],
+            vec!["--allow-rpc-submission"],
+            vec!["--rpc-no-auth", "--rpc-bind", "0.0.0.0:0"],
+            vec!["--rpc-no-auth", "--rpc-bind", "[::]:0"],
+        ] {
+            let result = command(&db).args(&prefix).args(flags).output().unwrap();
+            assert!(!result.status.success());
+            assert!(!db.exists());
+        }
+    }
+    let result = command(&db)
+        .args([
+            "--rpc-credentials",
+            "/nonexistent",
+            "serve",
+            "--standalone",
+            "--rpc-no-auth",
+        ])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("after the explicit command"));
+    let result = command(&db)
+        .args(["serve", "--standalone"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&result.stderr).contains("--rpc-credentials or --rpc-no-auth"));
+}
+
+#[test]
+fn normal_startup_never_replaces_invalid_existing_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("fedimint-light-node");
+    std::fs::create_dir(&state).unwrap();
+    let db = state.join("chain.redb");
+    std::fs::write(&db, b"partial or invalid database").unwrap();
+    // Literally no CLI arguments: the shipped binary resolves its persistent path.
+    let result = Command::new(env!("CARGO_BIN_EXE_fedimint-light-node"))
+        .env("XDG_STATE_HOME", dir.path())
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    let diagnostics = String::from_utf8_lossy(&result.stderr);
+    assert!(diagnostics.contains(db.to_str().unwrap()), "{diagnostics}");
+    assert!(!diagnostics.contains("initializing new mainnet state"));
+    assert_eq!(std::fs::read(&db).unwrap(), b"partial or invalid database");
+
+    #[cfg(unix)]
+    {
+        std::fs::remove_file(&db).unwrap();
+        let absent = state.join("absent-target");
+        std::os::unix::fs::symlink(&absent, &db).unwrap();
+        let result = command(&db)
+            .args(["--rpc-bind", "127.0.0.1:0"])
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(
+            !String::from_utf8_lossy(&result.stderr).contains("initializing new mainnet state")
+        );
+        assert!(std::fs::symlink_metadata(&db).unwrap().is_symlink());
+        assert!(!absent.exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn normal_startup_serves_existing_unbound_state_without_credentials_and_stops() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("chain");
+    create(&db);
+    let peer = TcpListener::bind("127.0.0.1:0").unwrap();
+    // Read the announced dynamic port instead of racing a released test socket.
+    let mut child = Child::start(command(&db).args([
+        "--manual-only",
+        "--peer",
+        &peer.local_addr().unwrap().to_string(),
+        "--rpc-bind",
+        "127.0.0.1:0",
+    ]));
+    let mut stream = accept(&peer);
+    handshake(&mut stream);
+    // Complete the first sync visit using only the local scripted peer.
+    assert!(matches!(
+        read(&mut stream),
+        bitcoin::p2p::message::NetworkMessage::GetHeaders(_)
+    ));
+    send(
+        &mut stream,
+        bitcoin::p2p::message::NetworkMessage::Headers(vec![]),
+    );
+    let stderr = child.process.as_mut().unwrap().stderr.take().unwrap();
+    let mut reader = std::io::BufReader::new(stderr);
+    let mut diagnostics = String::new();
+    let address = loop {
+        use std::io::BufRead;
+        let mut line = String::new();
+        assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+        diagnostics.push_str(&line);
+        if let Some(line) = line.strip_prefix("rpc_listen=") {
+            assert!(line.contains("rpc_no_auth=true fake_bitcoind=false submission_only=false"));
+            break line.split_whitespace().next().unwrap().to_string();
+        }
+    };
+    let mut rpc = TcpStream::connect(&address).unwrap();
+    rpc.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"getblockcount","params":[]}"#;
+    write!(rpc, "POST / HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+    let mut response = String::new();
+    rpc.read_to_string(&mut response).unwrap();
+    assert!(response.contains("\"result\":3"), "{response}");
+    let pid = child.process.as_ref().unwrap().id().to_string();
+    assert!(
+        Command::new("sh")
+            .args(["-c", "kill -TERM \"$1\"", "sh", &pid])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(child.finish().status.success());
+    reader.read_to_string(&mut diagnostics).unwrap();
+    assert!(diagnostics.contains("bitcoin-cli -rpcconnect=127.0.0.1"));
+    assert!(!diagnostics.contains("initializing new mainnet state"));
+    assert!(stdout(&command(&db).arg("status").output().unwrap()).contains("selected_height=3"));
 }
 
 #[test]

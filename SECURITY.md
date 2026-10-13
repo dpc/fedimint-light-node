@@ -70,7 +70,23 @@ database work, block serialization or publication. Executable runtime teardown
 waits at most two seconds for resolver jobs; they can still outlive cancellation.
 This is not a hard shutdown-time guarantee for synchronous work or the library.
 
-The explicit `serve` command adds a loopback-only Basic-authenticated RPC endpoint.
+Normal no-command startup bootstraps only an absent database in the printed
+persistent per-user state directory, then serves unbound read-only RPC without
+authentication. Existing invalid, partial, locked or guardian-bound state fails
+closed; it is never reset or re-anchored. Use explicit `serve` with independent
+guardian preflight for bound state. The default directory is created privately;
+existing directories and explicit paths must already have trusted ownership.
+
+RPC is loopback-only. `serve` requires explicit `--rpc-no-auth` or credentials;
+normal startup defaults to unauthenticated reads. The library's `RpcAuth::NoAuth`
+also forbids transaction submission, independently of CLI checks.
+Unauthenticated mode permits any local process to query and consume bounded
+resources. It rejects browser Origin headers, requires JSON content type and a
+Host naming the listener's local IP or localhost, and provides no CORS.
+These checks prevent ordinary cross-origin requests and DNS rebinding; they are
+not local-user isolation or authentication.
+
+`--rpc-credentials` enables Basic authentication.
 Basic authentication is not encryption; local users can still connect or deny service.
 Use a private trusted parent directory and a mode-0600 regular credentials file;
 the pre-open file check is not a hostile-directory sandbox. Credentials are not

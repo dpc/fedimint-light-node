@@ -36,9 +36,12 @@ the direct P2P socket-lifecycle guarantees. A thin operational executable owns
 runtime and process signals while exposing bootstrap, offline status/protection,
 header visits, body-file export and bounded transaction submission through these APIs.
 Submission shares the pool and exclusive foreground owner without a mempool or retry queue;
-a completed write establishes neither acceptance nor propagation. An optional authenticated
+a completed write establishes neither acceptance nor propagation. An optionally authenticated
 loopback RPC transport serializes requests with continuing synchronization under one owner;
 the caller still owns its runtime and shutdown. Synthetic Core status is explicit opt-in.
+Unauthenticated RPC forbids submission. Normal CLI startup opens pinned local
+state or bootstraps only an absent destination, then serves unbound local reads;
+bound state still requires explicit guardian preflight.
 Manual local guardian identity binding and startup preflight are implemented;
 automatic consumer database/finality coordination remains absent.
 Fee information is caller configuration: unavailable by

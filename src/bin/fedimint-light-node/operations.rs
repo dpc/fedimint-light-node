@@ -11,7 +11,7 @@ use fedimint_light_node::header_sync::HeaderSync;
 use fedimint_light_node::transaction_submission_config::TransactionSubmissionConfig;
 use fedimint_light_node::validated_header_store::ValidatedHeaderStore;
 
-use crate::options::{Command, Options};
+use crate::options::{Command, Options, RpcOptions};
 use crate::{Result, interrupted, output};
 
 /// Dispatch explicit operations without adding chain logic or implicit recovery.
@@ -21,11 +21,15 @@ pub async fn run(
 ) -> Result<()> {
     let config = options.store_config();
     let fee_policy = options.fee_policy();
-    let mut peer_cache = options.db.as_os_str().to_os_string();
+    let db = options
+        .db
+        .as_deref()
+        .ok_or("--db is required for explicit commands")?;
+    let mut peer_cache = db.as_os_str().to_os_string();
     peer_cache.push(".peers");
     let peer_cache = std::path::PathBuf::from(peer_cache);
     output::fee_policy(fee_policy)?;
-    match options.command {
+    match options.command.ok_or("explicit command required")? {
         Command::Bootstrap {
             network,
             source,
@@ -56,20 +60,20 @@ pub async fn run(
             let store = tokio::select! {
                 biased;
                 result = &mut shutdown => { result?; return Err(interrupted()); }
-                result = bootstrap(&options.db, config, now()?) => result?,
+                result = bootstrap(db, config, now()?) => result?,
             };
             output::status(&store)?;
         }
         Command::Status => {
-            output::status(&ValidatedHeaderStore::open_pinned(&options.db, config)?)?;
+            output::status(&ValidatedHeaderStore::open_pinned(db, config)?)?;
         }
         Command::Checkpoint { output } => {
-            let store = ValidatedHeaderStore::open_pinned(&options.db, config)?;
+            let store = ValidatedHeaderStore::open_pinned(db, config)?;
             crate::recovery::identity(&store, options.guardian_id)?;
             crate::recovery::write_json(&output, &crate::recovery::state(&store)?)?;
         }
         Command::Backup { output, manifest } => {
-            let store = ValidatedHeaderStore::open_pinned(&options.db, config)?;
+            let store = ValidatedHeaderStore::open_pinned(db, config)?;
             crate::recovery::identity(&store, options.guardian_id)?;
             crate::recovery::backup(&store, config, &output, &manifest)?;
         }
@@ -82,35 +86,48 @@ pub async fn run(
                 &backup,
                 &manifest,
                 &expected_state,
-                &options.db,
+                db,
                 config,
                 options.guardian_id,
             )?;
         }
         Command::BindGuardian { guardian } => {
-            let mut store = ValidatedHeaderStore::open_pinned(&options.db, config)?;
+            let mut store = ValidatedHeaderStore::open_pinned(db, config)?;
             store.bind_guardian(guardian.preflight(options.guardian_id)?)?;
             output::status(&store)?;
         }
         Command::Serve {
             network,
-            rpc_bind,
-            rpc_credentials,
-            fake_bitcoind,
-            allow_rpc_submission,
+            rpc:
+                RpcOptions {
+                    rpc_bind,
+                    rpc_credentials,
+                    rpc_no_auth,
+                    fake_bitcoind,
+                    allow_rpc_submission,
+                },
             standalone,
             guardian,
         } => {
             use fedimint_light_node::guardian_rpc::{GuardianRpc, SYNTHETIC_STATUS_WARNING};
-            use fedimint_light_node::guardian_rpc_config::GuardianRpcConfig;
-            let (username, password) = crate::rpc_credentials::read(&rpc_credentials)?;
-            let store = ValidatedHeaderStore::open_pinned(&options.db, config)?;
+            use fedimint_light_node::guardian_rpc_config::{GuardianRpcConfig, RpcAuth};
+            let auth = if rpc_no_auth {
+                RpcAuth::NoAuth
+            } else {
+                let (username, password) = crate::rpc_credentials::read(
+                    rpc_credentials
+                        .as_deref()
+                        .ok_or("serve requires --rpc-credentials or --rpc-no-auth")?,
+                )?;
+                RpcAuth::Basic { username, password }
+            };
+            let store = ValidatedHeaderStore::open_pinned(db, config)?;
             if standalone {
                 if options.guardian_id.is_some() || guardian.is_present() {
                     return Err("--standalone cannot include guardian state".into());
                 }
                 crate::recovery::identity(&store, None)?;
-                eprintln!("mode=standalone-smoke guardian_coordination=absent");
+                eprintln!("mode=standalone guardian_coordination=absent");
             } else {
                 store.preflight_guardian(guardian.preflight(options.guardian_id)?)?;
                 eprintln!(
@@ -128,8 +145,7 @@ pub async fn run(
             let rpc = GuardianRpc::bind(
                 GuardianRpcConfig {
                     bind: rpc_bind,
-                    username,
-                    password,
+                    auth,
                     fake_bitcoind,
                     allow_submission: allow_rpc_submission,
                 },
@@ -137,9 +153,23 @@ pub async fn run(
             )
             .await?;
             eprintln!(
-                "rpc_listen={} fake_bitcoind={fake_bitcoind} submission_only={allow_rpc_submission}",
+                "rpc_listen={} rpc_no_auth={rpc_no_auth} fake_bitcoind={fake_bitcoind} submission_only={allow_rpc_submission}",
                 rpc.local_addr()?
             );
+            if rpc_no_auth {
+                let addr = rpc.local_addr()?;
+                eprintln!(
+                    "read-only local RPC; any local process can query; do not forward this port"
+                );
+                eprintln!(
+                    "bitcoin-cli -rpcconnect={} -rpcport={} -rpcuser=demo -rpcpassword=demo getblockcount",
+                    addr.ip(),
+                    addr.port()
+                );
+                eprintln!(
+                    "curl --noproxy '*' -H 'Content-Type: application/json' --data '{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getblockcount\",\"params\":[]}}' 'http://{addr}/'"
+                );
+            }
             if fake_bitcoind {
                 eprintln!("WARNING: {SYNTHETIC_STATUS_WARNING}");
             }
@@ -174,7 +204,7 @@ pub async fn run(
                 ..TransactionSubmissionConfig::default()
             };
             let transaction = crate::transaction_input::read(&input, limits)?;
-            let store = ValidatedHeaderStore::open_pinned(&options.db, config)?;
+            let store = ValidatedHeaderStore::open_pinned(db, config)?;
             let mut sync = HeaderSync::new(
                 store,
                 network.sync_config(
@@ -211,7 +241,7 @@ pub async fn run(
             }
         }
         Command::Protect { height, hash } => {
-            let mut store = ValidatedHeaderStore::open_pinned(&options.db, config)?;
+            let mut store = ValidatedHeaderStore::open_pinned(db, config)?;
             crate::recovery::identity(&store, options.guardian_id)?;
             store.protect_through(height, hash)?;
             output::status(&store)?;
@@ -223,7 +253,7 @@ pub async fn run(
             requests,
             candidate_headers,
         } => {
-            let store = ValidatedHeaderStore::open_pinned(&options.db, config)?;
+            let store = ValidatedHeaderStore::open_pinned(db, config)?;
             let mut sync = HeaderSync::new(
                 store,
                 network.sync_config(
@@ -284,7 +314,7 @@ pub async fn run(
             // Even aliases of the DB (hard links/symlinks) already exist and fail
             // here. Publication checks again atomically after network work.
             output::require_new(&path)?;
-            let store = ValidatedHeaderStore::open_pinned(&options.db, config)?;
+            let store = ValidatedHeaderStore::open_pinned(db, config)?;
             let hash = match hash {
                 Some(hash) => hash,
                 None => store.header(height)?.block_hash(),

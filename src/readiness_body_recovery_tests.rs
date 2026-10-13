@@ -213,8 +213,10 @@ async fn selected_body_failures_recover_through_managed_pool_and_rpc() {
         let rpc = GuardianRpc::bind(
             GuardianRpcConfig {
                 bind: "127.0.0.1:0".parse().unwrap(),
-                username: "guardian".into(),
-                password: "secret".into(),
+                auth: crate::guardian_rpc_config::RpcAuth::Basic {
+                    username: "guardian".into(),
+                    password: "secret".into(),
+                },
                 fake_bitcoind: false,
                 allow_submission: false,
             },

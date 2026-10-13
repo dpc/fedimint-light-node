@@ -11,12 +11,15 @@ use fedimint_light_node::store_config::StoreConfig;
 use fedimint_light_node::sync_config::SyncConfig;
 
 /// Thin mainnet operations; selected headers never prove freshness or consensus.
-#[derive(Debug, Parser)]
-#[command(version, about)]
+#[derive(Clone, Debug, Parser)]
+#[command(
+    version,
+    about = "Mainnet light node: with no command, open or bootstrap persistent state, sync and serve read-only localhost RPC. Not a full consensus validator."
+)]
 pub struct Options {
-    /// Database path in a trusted local directory; never implicitly created on open.
+    /// Database path; normal startup defaults to $XDG_STATE_HOME/fedimint-light-node/chain.redb.
     #[arg(long)]
-    pub db: PathBuf,
+    pub db: Option<PathBuf>,
     /// Persisted header capacity; must match on every reopen (no resizing).
     #[arg(long, global = true, default_value_t = 52_560, value_parser = clap::value_parser!(u64).range(1..=105_120))]
     pub capacity: u64,
@@ -30,12 +33,37 @@ pub struct Options {
     /// Independently recorded 32-byte guardian database identity in hex (not a secret).
     #[arg(long, global = true)]
     pub guardian_id: Option<bitcoin::hashes::sha256::Hash>,
-    /// Requested operation.
+    /// Normal startup network options; for explicit commands put these after the command.
+    #[command(flatten)]
+    pub network: Network,
+    /// Normal startup RPC options; omitted credentials mean read-only unauthenticated RPC.
+    #[command(flatten)]
+    pub rpc: RpcOptions,
+    /// Requested operation; omitted = open or bootstrap state, sync and serve local reads.
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 impl Options {
+    /// Reject root-level service settings rather than silently ignoring them with a command.
+    pub fn check_command_scope(&self) -> crate::Result<()> {
+        if self.command.is_some()
+            && (self.rpc.rpc_credentials.is_some()
+                || self.rpc.rpc_no_auth
+                || self.rpc.fake_bitcoind
+                || self.rpc.allow_rpc_submission
+                || self.rpc.rpc_bind
+                    != "127.0.0.1:18443"
+                        .parse::<SocketAddr>()
+                        .expect("constant address")
+                || self.network.manual_only
+                || !self.network.peer.is_empty()
+                || self.network.timeout_seconds != 20)
+        {
+            return Err("put network and RPC options after the explicit command, or omit the command for normal startup".into());
+        }
+        Ok(())
+    }
     /// Resolve explicit caller fee configuration without inventing an estimate.
     pub fn fee_policy(&self) -> FeePolicy {
         self.fixed_fee_sats_per_kvb
@@ -53,7 +81,7 @@ impl Options {
 }
 
 /// Operations remain explicit; opening never falls back to bootstrap.
-#[derive(Debug, Subcommand)]
+#[derive(Clone, Debug, Subcommand)]
 pub enum Command {
     /// Create a NEW store using trusted HTTPS agreement and P2P ancestry.
     Bootstrap {
@@ -106,23 +134,13 @@ pub enum Command {
         #[arg(long)]
         expected_state: PathBuf,
     },
-    /// Sync while serving a bounded authenticated guardian-only RPC on loopback.
+    /// Sync while serving bounded RPC on loopback (authenticated unless --rpc-no-auth).
     Serve {
         #[command(flatten)]
         network: Network,
-        /// Numeric loopback listen address; no public interfaces accepted.
-        #[arg(long, default_value = "127.0.0.1:18443")]
-        rpc_bind: SocketAddr,
-        /// Private regular file containing username:password (optional final newline).
-        #[arg(long)]
-        rpc_credentials: PathBuf,
-        /// Opt in to synthetic Core status, NOT validation, freshness or readiness.
-        #[arg(long)]
-        fake_bitcoind: bool,
-        /// Enable submission-only sendrawtransaction WITHOUT Core fee/burn safeguards.
-        #[arg(long)]
-        allow_rpc_submission: bool,
-        /// Explicit unbound smoke/demo mode; never a guardian-finality integration.
+        #[command(flatten)]
+        rpc: RpcOptions,
+        /// Explicit unbound service; never a guardian-finality integration.
         #[arg(long)]
         standalone: bool,
         /// Bound guardian startup evidence, required unless --standalone.
@@ -191,8 +209,28 @@ pub enum Command {
     },
 }
 
+/// RPC flags shared by normal startup and explicit serving.
+#[derive(Clone, Debug, Args)]
+pub struct RpcOptions {
+    /// Numeric loopback listen address; use port 0 to select an available port.
+    #[arg(long, default_value = "127.0.0.1:18443")]
+    pub rpc_bind: SocketAddr,
+    /// Private regular file containing username:password (optional final newline).
+    #[arg(long, conflicts_with = "rpc_no_auth")]
+    pub rpc_credentials: Option<PathBuf>,
+    /// Allow read-only local RPC without credentials (normal startup default).
+    #[arg(long, conflicts_with = "allow_rpc_submission")]
+    pub rpc_no_auth: bool,
+    /// Opt in to synthetic Core status, NOT validation, freshness or readiness.
+    #[arg(long)]
+    pub fake_bitcoind: bool,
+    /// Enable submission-only sendrawtransaction WITHOUT Core fee/burn safeguards.
+    #[arg(long, requires = "rpc_credentials")]
+    pub allow_rpc_submission: bool,
+}
+
 /// Explicit guardian watermark; not a claim inferred from network or RPC activity.
-#[derive(Debug, Args)]
+#[derive(Clone, Debug, Default, Args)]
 pub struct GuardianState {
     /// Last irreversibly consumed block HEIGHT (not Fedimint block count).
     #[arg(long)]
@@ -231,7 +269,7 @@ impl GuardianState {
 }
 
 /// Public discovery by default, supplemented or replaced by explicit numeric peers.
-#[derive(Debug, Args)]
+#[derive(Clone, Debug, Args)]
 pub struct Network {
     /// Optional IPv4:port or [IPv6]:port peers; repeat up to sixteen times.
     #[arg(long)]

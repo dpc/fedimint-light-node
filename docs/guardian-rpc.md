@@ -1,4 +1,4 @@
-# Guardian RPC and a read-only mainnet demo
+# Local RPC and guardian compatibility
 
 `serve` synchronizes headers while exposing **seven guardian-only RPC methods**.
 It is not Bitcoin Core, a full validator, or a production guardian-finality
@@ -8,7 +8,59 @@ integration. The compatibility target is Fedimint
 No reference Fedimint source is modified. See the [operator runbook](operations.md)
 for explicit guardian binding, startup preflight, stopped-store backup and recovery.
 
-## Mainnet walkthrough
+## Normal startup
+
+Run `cargo run` (or `nix run .`). No arguments, prior bootstrap, credentials or
+special demo mode are needed. The binary bootstraps a new mainnet store only when
+the destination is absent, otherwise reopens pinned state, synchronizes headers
+and serves read-only RPC at `127.0.0.1:18443`. It prints its persistent database
+path: `$XDG_STATE_HOME/fedimint-light-node/chain.redb`, falling back to
+`~/.local/state/fedimint-light-node/chain.redb` when XDG state home is empty, unset
+or relative. It never silently resets existing state. Guardian-bound state
+requires explicit `serve` with the independently recorded guardian preflight.
+
+Defaults retain 52,560 headers with an 8 MiB database cache, use the existing
+bounded public peer pool and require agreement of the two default HTTPS sources
+with a six-block confirmation margin. First bootstrap has a ten-minute total
+asynchronous deadline; Ctrl-C cancels bootstrap or serving. Synchronous work and
+OS resolver shutdown have the limits described in [SECURITY.md](../SECURITY.md).
+The store persists across stops, including a checkpoint published just before
+cancellation. No fee estimate or synthetic Core status is enabled by default.
+
+Once startup prints `rpc_listen=`, use either:
+
+```sh
+bitcoin-cli -rpcconnect=127.0.0.1 -rpcport=18443 -rpcuser=demo -rpcpassword=demo getblockcount
+curl --noproxy '*' -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"getblockcount","params":[]}' \
+  http://127.0.0.1:18443/
+```
+
+The server ignores credentials in unauthenticated mode. The dummy client
+credentials accommodate clients that require a password or cookie. Locally tested
+Bitcoin Core CLI 31.1.0 also works without them. No Core daemon is needed.
+Use `cargo run -- --fake-bitcoind` only when you want the synthetic
+`getblockchaininfo` and `getnetworkinfo` compatibility schema described below.
+`--db /trusted/path/chain.redb` overrides the path; custom `--capacity` must match
+on every reopen. `--rpc-bind 127.0.0.1:0` chooses an available port if the default
+is occupied; startup prints matching query commands.
+
+For authenticated normal startup instead:
+
+```sh
+umask 077
+printf 'guardian:replace-with-a-private-password\n' > /private/rpc.auth
+cargo run -- --rpc-credentials /private/rpc.auth
+```
+
+Create the file in a private trusted directory and configure the matching
+credentials in your client's private `bitcoin.conf`. Explicit `serve` retains
+its opt-in policy: supply either `--rpc-credentials FILE` or `--rpc-no-auth`.
+The latter conflicts with credentials and `--allow-rpc-submission`; normal
+startup also requires credentials to enable submission. Both forms support only
+numeric IPv4 or IPv6 loopback binds. Do not expose or forward the listener.
+
+## Explicit disposable mainnet walkthrough
 
 This small demo uses a disposable private directory, a 144-header retained
 window and no transaction submission. It downloads recent ancestry and a full
@@ -25,21 +77,15 @@ Use a shell that supports the function syntax below:
 NODE=./result/bin/fedimint-light-node
 DEMO=$(mktemp -d)
 chmod 700 "$DEMO"
-umask 077
-PASSWORD=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
-printf 'guardian:%s\n' "$PASSWORD" > "$DEMO/rpc.auth"
-printf 'rpcuser=guardian\nrpcpassword=%s\nrpcconnect=127.0.0.1\nrpcport=18443\n' \
-  "$PASSWORD" > "$DEMO/bitcoin.conf"
-unset PASSWORD
 
 # Create NEW state once. Never remove/rebootstrap an existing guardian store.
 "$NODE" --db "$DEMO/chain.redb" --capacity 144 bootstrap \
   --confirmation-margin 6 --total-seconds 300
 
-# Terminal A; leave running. Credentials stay out of process arguments.
+# Terminal A; leave running. Local reads need no server credentials.
 "$NODE" --db "$DEMO/chain.redb" --capacity 144 \
   --fixed-fee-sats-per-kvb 1000 serve \
-  --rpc-credentials "$DEMO/rpc.auth" --fake-bitcoind --standalone
+  --rpc-no-auth --fake-bitcoind --standalone
 ```
 
 Startup prints selected state, the loopback address, and the complete synthetic
@@ -53,7 +99,7 @@ terminal A before starting `serve`:
 
 ```sh
 DEMO=/tmp/the-directory-created-above
-rpc() { bitcoin-cli -datadir="$DEMO" -conf="$DEMO/bitcoin.conf" "$@"; }
+rpc() { bitcoin-cli -datadir="$DEMO" -rpcconnect=127.0.0.1 -rpcport=18443 -rpcuser=demo -rpcpassword=demo "$@"; }
 rpc getblockchaininfo
 rpc getnetworkinfo
 HEIGHT=$(rpc getblockcount)
@@ -125,11 +171,22 @@ one reason the synthetic fields must not be treated as health evidence.
 
 ## Transport and resource boundaries
 
-Only numeric loopback addresses are accepted. Credentials are mandatory, bounded
-to 512 combined bytes and read from a private regular file in the CLI. No TLS,
+Only numeric loopback addresses are accepted. When authentication is enabled,
+credentials are bounded to 512 combined bytes and read from a private regular
+file in the CLI. No TLS,
 cookie, public bind, CORS or wallet routes are provided; do not port-forward it.
 Basic auth is compared by a constant-time fixed-size SHA-256 digest comparison.
 Local connection flooding remains a denial-of-service risk.
+
+Without authentication, HTTP requests must include a single `Host` naming the
+bound IP or `localhost`, optionally with the actual listen port, and a single
+`Content-Type: application/json`. Bare IPv6 and bracketed IPv6 numeric hosts are
+accepted. Any `Origin` header is forbidden. These native-client restrictions
+block browser-origin requests and DNS rebinding without adding CORS or changing
+the authenticated dialect. A supplied Authorization header is ignored in
+unauthenticated mode, but duplicate headers and malformed HTTP still fail.
+The library rejects `RpcAuth::NoAuth` combined with `allow_submission`, so
+embedding callers cannot bypass the read-only policy.
 
 The parser accepts one HTTP/1.1 `POST /` per connection with a single decimal
 `Content-Length`; it closes after an explicit-length JSON reply. It rejects

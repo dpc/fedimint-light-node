@@ -2,10 +2,13 @@
 
 ## Status
 
-An authenticated loopback RPC profile supports the pinned Fedimint bitcoind
+An optionally authenticated loopback RPC profile supports the pinned Fedimint bitcoind
 client's seven methods. Its Core-status compatibility requires explicit
 default-off `--fake-bitcoind`; the synthetic field inventory and wire dialect
 are documented in the [RPC guide](../docs/guardian-rpc.md).
+Unauthenticated RPC is restricted to reads; transaction submission requires
+explicit authenticated configuration. Normal CLI startup opens or bootstraps
+unbound persistent state and serves local reads without setup commands.
 The library and CLI now support bounded caller-driven transaction submission;
 completed writes do not establish peer acceptance, propagation or confirmation.
 Cancellation can follow delivery; retry remains an explicit caller decision.

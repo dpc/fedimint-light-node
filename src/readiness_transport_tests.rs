@@ -340,8 +340,10 @@ async fn default_store_real_pool_and_rpc_pressure() {
     let rpc = GuardianRpc::bind(
         GuardianRpcConfig {
             bind: "127.0.0.1:0".parse().unwrap(),
-            username: "guardian".into(),
-            password: "secret".into(),
+            auth: crate::guardian_rpc_config::RpcAuth::Basic {
+                username: "guardian".into(),
+                password: "secret".into(),
+            },
             fake_bitcoind: false,
             allow_submission: false,
         },

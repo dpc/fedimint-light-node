@@ -16,7 +16,7 @@ use bitcoin::p2p::message_network::VersionMessage;
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 use fedimint_light_node::fee_policy::FeePolicy;
 use fedimint_light_node::guardian_rpc::GuardianRpc;
-use fedimint_light_node::guardian_rpc_config::GuardianRpcConfig;
+use fedimint_light_node::guardian_rpc_config::{GuardianRpcConfig, RpcAuth};
 use fedimint_light_node::header_sync::HeaderSync;
 use fedimint_light_node::peer_pool_config::PeerPoolConfig;
 use fedimint_light_node::store_anchor::StoreAnchor;
@@ -78,8 +78,10 @@ fn service(path: &std::path::Path, peer: SocketAddr, fee: FeePolicy, tip: usize)
 fn rpc_config(fake: bool, submission: bool) -> GuardianRpcConfig {
     GuardianRpcConfig {
         bind: "127.0.0.1:0".parse().unwrap(),
-        username: "guardian".into(),
-        password: "secret".into(),
+        auth: RpcAuth::Basic {
+            username: "guardian".into(),
+            password: "secret".into(),
+        },
         fake_bitcoind: fake,
         allow_submission: submission,
     }
@@ -320,6 +322,157 @@ async fn authentication_framing_limits_and_shutdown_with_partial_connections() {
 }
 
 #[tokio::test]
+async fn unauthenticated_loopback_reads_reject_submission_and_browser_requests() {
+    for bind in ["127.0.0.1:0", "[::1]:0"] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = rpc_config(false, false);
+        config.auth = RpcAuth::NoAuth;
+        config.bind = bind.parse().unwrap();
+        let rpc = GuardianRpc::bind(
+            config,
+            service(
+                &dir.path().join("chain"),
+                "127.0.0.1:1".parse().unwrap(),
+                FeePolicy::Unavailable,
+                2,
+            ),
+        )
+        .await
+        .unwrap();
+        let addr = rpc.local_addr().unwrap();
+        let (stop, stopped) = oneshot::channel();
+        let task = tokio::spawn(rpc.run(
+            async {
+                let _ = stopped.await;
+            },
+            |_, _| {},
+        ));
+        let mut hosts = vec![
+            addr.to_string(),
+            addr.ip().to_string(),
+            "localhost".to_string(),
+            format!("localhost:{}", addr.port()),
+        ];
+        if addr.is_ipv6() {
+            hosts.push(format!("[{}]", addr.ip()));
+        }
+        for host in hosts {
+            let body = r#"{"method":"getblockcount","params":[],"id":1,"jsonrpc":"2.0"}"#;
+            let response = wire(addr, format!(
+                "POST / HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len(),
+            ).as_bytes()).await;
+            assert!(response.contains("\"result\":2"), "{response}");
+            assert!(!response.contains("WWW-Authenticate"));
+        }
+        for auth in ["", "Authorization: Basic dummy\r\n"] {
+            for (method, expected) in [
+                ("getblockcount", "\"result\":2"),
+                ("sendrawtransaction", "-32601"),
+                ("getblockchaininfo", "-32601"),
+            ] {
+                let body = json!({"jsonrpc":"2.0","id":1,"method":method,"params":[]}).to_string();
+                let response = wire(addr, format!(
+                    "POST / HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\n{auth}Content-Length: {}\r\n\r\n{body}", body.len(),
+                ).as_bytes()).await;
+                assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+                assert!(response.contains(expected), "{response}");
+            }
+        }
+        // Native pinned client works both without auth and with dummy client credentials.
+        tokio::task::spawn_blocking(move || {
+            for auth in [Auth::None, Auth::UserPass("demo".into(), "demo".into())] {
+                let client = Client::new(&format!("http://{addr}"), auth).unwrap();
+                assert_eq!(client.get_block_count().unwrap(), 2);
+            }
+        })
+        .await
+        .unwrap();
+        for (extra, status) in [
+            ("Origin: https://attacker.example\r\n", "403"),
+            ("Origin: null\r\n", "403"),
+            ("Host: attacker.example\r\n", "400"),
+            ("Content-Type: text/plain\r\n", "400"),
+            ("Authorization: a\r\nAuthorization: b\r\n", "400"),
+            ("Bad Header: x\r\n", "400"),
+            ("Transfer-Encoding: chunked\r\n", "400"),
+            ("Content-Encoding: gzip\r\n", "400"),
+            ("Content-Length: 0\r\n", "400"),
+        ] {
+            let response = wire(addr, format!("POST / HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\n{extra}Content-Length: 0\r\n\r\n").as_bytes()).await;
+            assert!(
+                response.starts_with(&format!("HTTP/1.1 {status}")),
+                "{response}"
+            );
+        }
+        for (host, content_type, status) in [
+            ("attacker.example".to_string(), "application/json", "403"),
+            (addr.to_string(), "text/plain", "415"),
+            (addr.to_string(), "application/x-www-form-urlencoded", "415"),
+            (
+                format!("localhost:{}", addr.port().wrapping_add(1)),
+                "application/json",
+                "403",
+            ),
+        ] {
+            let response = wire(addr, format!("POST / HTTP/1.1\r\nHost: {host}\r\nContent-Type: {content_type}\r\nContent-Length: 0\r\n\r\n").as_bytes()).await;
+            assert!(
+                response.starts_with(&format!("HTTP/1.1 {status}")),
+                "{response}"
+            );
+        }
+        for (headers, status) in [
+            ("Content-Type: application/json\r\n".to_string(), "403"),
+            (format!("Host: {addr}\r\n"), "415"),
+        ] {
+            let response = wire(
+                addr,
+                format!("POST / HTTP/1.1\r\n{headers}Content-Length: 0\r\n\r\n").as_bytes(),
+            )
+            .await;
+            assert!(
+                response.starts_with(&format!("HTTP/1.1 {status}")),
+                "{response}"
+            );
+        }
+        stop.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn unauthenticated_library_configuration_is_loopback_and_read_only() {
+    for (bind, submission) in [
+        ("0.0.0.0:0", false),
+        ("[::]:0", false),
+        ("192.0.2.1:0", false),
+        ("127.0.0.1:0", true),
+        ("[::1]:0", true),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = rpc_config(false, submission);
+        config.auth = RpcAuth::NoAuth;
+        config.bind = bind.parse().unwrap();
+        assert!(
+            GuardianRpc::bind(
+                config,
+                service(
+                    &dir.path().join("chain"),
+                    "127.0.0.1:1".parse().unwrap(),
+                    FeePolicy::Unavailable,
+                    2
+                ),
+            )
+            .await
+            .is_err()
+        );
+    }
+}
+
+#[tokio::test]
 async fn reject_public_bind_empty_credentials_and_lossy_fee_before_listening() {
     for variant in 0..3 {
         let dir = tempfile::tempdir().unwrap();
@@ -341,7 +494,10 @@ async fn reject_public_bind_empty_credentials_and_lossy_fee_before_listening() {
             config.bind = "0.0.0.0:0".parse().unwrap();
         }
         if variant == 1 {
-            config.password.clear();
+            config.auth = RpcAuth::Basic {
+                username: "guardian".into(),
+                password: String::new(),
+            };
         }
         assert!(GuardianRpc::bind(config, sync).await.is_err());
     }

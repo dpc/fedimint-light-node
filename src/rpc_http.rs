@@ -21,7 +21,7 @@ const MAX_REPLY: usize = 8_001_024;
 
 pub(crate) async fn serve(
     mut stream: TcpStream,
-    authorization: [u8; 32],
+    authorization: Option<[u8; 32]>,
     sender: mpsc::Sender<Pending>,
     slow_sender: mpsc::Sender<Pending>,
 ) -> io::Result<()> {
@@ -151,7 +151,7 @@ fn bounded_json(bytes: &[u8]) -> bool {
 
 async fn read_request(
     stream: &mut TcpStream,
-    authorization: [u8; 32],
+    authorization: Option<[u8; 32]>,
 ) -> Result<Vec<u8>, &'static str> {
     let mut bytes = [0u8; 4096];
     let mut filled = 0;
@@ -181,9 +181,22 @@ async fn read_request(
     }
     let mut auth = None;
     let mut length = None;
+    let mut host = None;
+    let mut content_type = None;
     for header in request.headers {
         if header.name.eq_ignore_ascii_case("authorization") {
             if auth.replace(header.value).is_some() {
+                return Err("400 Bad Request");
+            }
+        } else if authorization.is_none() && header.name.eq_ignore_ascii_case("origin") {
+            // Native-only endpoint: reject browser requests, including Origin: null.
+            return Err("403 Forbidden");
+        } else if authorization.is_none() && header.name.eq_ignore_ascii_case("host") {
+            if host.replace(header.value).is_some() {
+                return Err("400 Bad Request");
+            }
+        } else if authorization.is_none() && header.name.eq_ignore_ascii_case("content-type") {
+            if content_type.replace(header.value).is_some() {
                 return Err("400 Bad Request");
             }
         } else if header.name.eq_ignore_ascii_case("content-length") {
@@ -206,9 +219,32 @@ async fn read_request(
             return Err("400 Bad Request");
         }
     }
-    let supplied = sha256::Hash::hash(auth.unwrap_or_default()).to_byte_array();
-    if !bool::from(supplied.ct_eq(&authorization)) {
-        return Err("401 Unauthorized");
+    if let Some(authorization) = authorization {
+        let supplied = sha256::Hash::hash(auth.unwrap_or_default()).to_byte_array();
+        if !bool::from(supplied.ct_eq(&authorization)) {
+            return Err("401 Unauthorized");
+        }
+    } else {
+        // Exact local authority prevents DNS rebinding; JSON excludes browser
+        // simple form/text submissions. No CORS preflight or origins are accepted.
+        let local = stream.local_addr().map_err(|_| "400 Bad Request")?;
+        let numeric = local.to_string();
+        // bitcoin-cli sends a bare numeric Host even for a non-default port.
+        let bare_ip = local.ip().to_string();
+        let bracketed_ip = format!("[{}]", local.ip());
+        let localhost = format!("localhost:{}", local.port());
+        if !host.is_some_and(|host| {
+            host == numeric.as_bytes()
+                || host == bare_ip.as_bytes()
+                || (local.is_ipv6() && host == bracketed_ip.as_bytes())
+                || host == localhost.as_bytes()
+                || host == b"localhost"
+        }) {
+            return Err("403 Forbidden");
+        }
+        if !content_type.is_some_and(|value| value.eq_ignore_ascii_case(b"application/json")) {
+            return Err("415 Unsupported Media Type");
+        }
     }
     let length = length.ok_or("411 Length Required")?;
     if length > MAX_BODY {
@@ -229,8 +265,13 @@ async fn read_request(
 async fn write(stream: &mut TcpStream, status: &str, body: &[u8]) -> io::Result<()> {
     #[cfg(all(test, target_os = "linux"))]
     let _writer = crate::readiness_observer::enter(crate::readiness_observer::Counter::Writer);
+    let challenge = if status == "401 Unauthorized" {
+        "WWW-Authenticate: Basic realm=\"guardian\"\r\n"
+    } else {
+        ""
+    };
     let header = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\nWWW-Authenticate: Basic realm=\"guardian\"\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{challenge}\r\n",
         body.len()
     );
     stream.write_all(header.as_bytes()).await?;

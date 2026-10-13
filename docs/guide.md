@@ -52,7 +52,7 @@ The `HeaderSync` API retrieves actual mainnet headers and complete matching
 witness-bearing blocks on demand over outbound Bitcoin P2P.
 The `bootstrap` API initializes a fresh store from trusted HTTPS source agreement
 and bounded P2P ancestry. A thin executable exposes these library operations;
-the [opt-in guardian RPC](guardian-rpc.md) adds authenticated loopback service
+the [guardian RPC](guardian-rpc.md) adds loopback service with optional authentication
 and a mainnet walkthrough. There is no mempool or fee estimator.
 The intended boundaries are described in
 [ARCH-fedimint-light-node](../specs/ARCH-fedimint-light-node.md).

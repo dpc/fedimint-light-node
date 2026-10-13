@@ -21,7 +21,7 @@ async fn connection(
     let (client, server) = streams().await;
     let auth = sha256::Hash::hash(b"Basic dTpw").to_byte_array();
     let (slow, _receive) = mpsc::channel(1);
-    let task = tokio::spawn(crate::rpc_http::serve(server, auth, send, slow));
+    let task = tokio::spawn(crate::rpc_http::serve(server, Some(auth), send, slow));
     (client, task)
 }
 
@@ -110,7 +110,7 @@ async fn terminal_owner_failure_drains_error_before_aborting_http_tasks() {
     let (slow, _receive) = mpsc::channel(1);
     let mut connections = tokio::task::JoinSet::new();
     connections.spawn(async move {
-        crate::rpc_http::serve(server, auth, send, slow)
+        crate::rpc_http::serve(server, Some(auth), send, slow)
             .await
             .unwrap();
     });
