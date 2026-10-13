@@ -125,6 +125,18 @@ manifest digest. That checks integrity, not independent source truth.
   in-flight successor, with every retained row matching the known chain and
   identity/protection unchanged. The recorded longer schedules reached tips
   829, 1177, 814 and 992. This is process-kill evidence, not power-loss testing.
+* **18 advanced guardian-bound protection SIGKILL schedules:** the normal test
+  suite acknowledges public `protect_through` at height600 only after successful
+  durable return, then selects through1200, pruning that checkpoint's header row
+  (retained689–1200). One control kills before advancement to900, one after its
+  acknowledgment, and sixteen schedules race that public call with0–5ms delays.
+  Reopen checks exact binding, anchor, retained headers, checkpoint height/hash,
+  no floor below any acknowledgment, and bound preflight with positive and
+  wrong-identity/wrong-hash cases. Unacknowledged900 may persist coherently as600
+  or900; refusal, lost metadata or a torn height/hash fails. A focused run passed
+  all18 schedules in3.38seconds and observed both old/new unacknowledged outcomes.
+  These are process-crash observations, not guaranteed internal transaction
+  interruption points, power-loss guarantees or guardian-database commit coordination.
 * **Duplicate writer and read-only file:** ownership rejects a second writer;
   mode-0400 rejects writer open, then normal permissions permit unchanged reopen.
   This test requires an unprivileged account, like the supported service;

@@ -1,7 +1,7 @@
 //! Disposable process-crash schedules; these do not simulate power loss or ENOSPC.
 #![cfg(unix)]
 
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, Stdio};
@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use bitcoin::Network;
 use bitcoin::block::Header;
+use fedimint_light_node::guardian_binding::GuardianPreflight;
 use fedimint_light_node::store_anchor::StoreAnchor;
 use fedimint_light_node::store_config::StoreConfig;
 use fedimint_light_node::validated_header_store::ValidatedHeaderStore;
@@ -51,6 +52,183 @@ fn crash_writer_child() {
         if std::env::var_os("READINESS_ALLOCATION_PRESSURE").is_some() {
             std::hint::black_box(vec![0u8; 128 * 1024 * 1024]);
         }
+    }
+}
+
+const GUARDIAN: [u8; 32] = [0x73; 32];
+const PRUNED_FLOOR: u64 = 600;
+const NEXT_FLOOR: u64 = 900;
+const PRUNED_TIP: u64 = 1200;
+
+fn guardian_state(headers: &[Header], height: u64, oldest_needed: u64) -> GuardianPreflight {
+    GuardianPreflight {
+        guardian_id: GUARDIAN,
+        committed_height: height,
+        committed_hash: headers[height as usize].block_hash(),
+        oldest_needed,
+    }
+}
+
+fn child_event(event: &str) {
+    println!("{event}");
+    std::io::stdout().flush().unwrap();
+}
+
+#[test]
+fn protection_crash_child() {
+    let Ok(path) = std::env::var("READINESS_PROTECTION_CHILD") else {
+        return;
+    };
+    let headers = headers();
+    let mut store = ValidatedHeaderStore::open(path, config(), anchor(&headers)).unwrap();
+    store
+        .protect_through(PRUNED_FLOOR, headers[PRUNED_FLOOR as usize].block_hash())
+        .unwrap();
+    // ACK follows the public API's durable successful return, never its invocation.
+    child_event("ACK 600");
+    store
+        .select_suffix(700, &headers[701..=PRUNED_TIP as usize], u64::MAX)
+        .unwrap();
+    assert!(store.bounds().unwrap().0 > PRUNED_FLOOR);
+    child_event("PRUNED");
+    child_event("BEFORE 900");
+    let mut command = String::new();
+    std::io::stdin().read_line(&mut command).unwrap();
+    assert_eq!(command, "GO\n");
+    store
+        .protect_through(NEXT_FLOOR, headers[NEXT_FLOOR as usize].block_hash())
+        .unwrap();
+    child_event("ACK 900");
+    // Keep the live store open until SIGKILL, including after the final ACK.
+    loop {
+        std::thread::park();
+    }
+}
+
+/// Kill and reap even if an assertion or a bounded event wait fails.
+struct KillOnDrop(std::process::Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[test]
+fn bound_protection_crash_reopen_preserves_advanced_pruned_checkpoint() {
+    let headers = headers();
+    let anchor = anchor(&headers);
+    // Include deterministic before-call and after-ACK controls, then race the
+    // public operation. No production hooks or claims of exact internal cutpoints.
+    for schedule in 0..18 {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("protection.redb");
+        let mut store =
+            ValidatedHeaderStore::create(&path, config(), anchor, &headers[..1]).unwrap();
+        store.bind_guardian(guardian_state(&headers, 0, 0)).unwrap();
+        store.select_suffix(0, &headers[1..=512], u64::MAX).unwrap();
+        store
+            .select_suffix(512, &headers[513..=700], u64::MAX)
+            .unwrap();
+        drop(store);
+        let mut child = KillOnDrop(
+            Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "protection_crash_child", "--nocapture"])
+                .env("READINESS_PROTECTION_CHILD", &path)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .unwrap(),
+        );
+        let stdout = child.0.stdout.take().unwrap();
+        let (send, events) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout).lines() {
+                send.send(line.unwrap()).unwrap();
+            }
+        });
+        let mut acknowledgements = Vec::new();
+        let mut wait_for = |expected: &str| loop {
+            let line = events.recv_timeout(Duration::from_secs(30)).unwrap();
+            if let Some(height) = line.strip_prefix("ACK ") {
+                acknowledgements.push(height.parse::<u64>().unwrap());
+            }
+            if line == expected {
+                break;
+            }
+        };
+        wait_for("ACK 600");
+        wait_for("PRUNED");
+        wait_for("BEFORE 900");
+        if schedule != 0 {
+            child.0.stdin.as_mut().unwrap().write_all(b"GO\n").unwrap();
+            if schedule == 1 {
+                wait_for("ACK 900");
+            } else {
+                std::thread::sleep(Duration::from_micros(
+                    [0, 50, 100, 250, 500, 1_000, 2_000, 5_000][(schedule - 2) % 8],
+                ));
+            }
+        }
+        child.0.kill().unwrap();
+        assert_eq!(child.0.wait().unwrap().signal(), Some(9));
+        reader.join().unwrap();
+        for line in events.try_iter() {
+            if let Some(height) = line.strip_prefix("ACK ") {
+                acknowledgements.push(height.parse::<u64>().unwrap());
+            }
+        }
+        let store = ValidatedHeaderStore::open(&path, config(), anchor).unwrap();
+        assert_eq!(store.anchor(), anchor);
+        assert_eq!(store.guardian_id().unwrap(), Some(GUARDIAN));
+        let (first, tip) = store.bounds().unwrap();
+        assert_eq!((first, tip), (689, PRUNED_TIP));
+        assert!(store.header(PRUNED_FLOOR).is_err());
+        let (floor, hash) = store.protected_checkpoint().unwrap();
+        assert!([PRUNED_FLOOR, NEXT_FLOOR].contains(&floor));
+        assert_eq!(store.protected_height().unwrap(), floor);
+        assert_eq!(hash, headers[floor as usize].block_hash());
+        assert!(acknowledgements.contains(&PRUNED_FLOOR));
+        for height in &acknowledgements {
+            assert!(*height <= floor, "lost acknowledged protection {height}");
+            // Earlier pruned checkpoints need not remain queryable once advanced;
+            // the exact successor's fixture ancestry must still include their hash.
+            assert!([PRUNED_FLOOR, NEXT_FLOOR].contains(height));
+        }
+        if schedule == 0 {
+            assert_eq!(floor, PRUNED_FLOOR);
+        }
+        if schedule == 1 {
+            assert_eq!(floor, NEXT_FLOOR);
+            assert!(acknowledgements.contains(&NEXT_FLOOR));
+        }
+        for height in first..=tip {
+            assert_eq!(store.header(height).unwrap(), headers[height as usize]);
+        }
+        assert_eq!(store.tip_context().unwrap().height(), tip);
+        let expected = guardian_state(&headers, floor, first);
+        store.preflight_guardian(expected).unwrap();
+        assert!(
+            store
+                .preflight_guardian(GuardianPreflight {
+                    guardian_id: [0x74; 32],
+                    ..expected
+                })
+                .is_err()
+        );
+        assert!(
+            store
+                .preflight_guardian(GuardianPreflight {
+                    committed_hash: anchor.hash,
+                    ..expected
+                })
+                .is_err()
+        );
+        println!(
+            "schedule={schedule} acknowledged={acknowledgements:?} checkpoint={floor}:{hash} retained={first}..={tip}"
+        );
     }
 }
 
