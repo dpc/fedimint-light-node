@@ -129,6 +129,17 @@ fn timestamp_boundaries_use_upper_median_and_injected_clock() {
         Err(HeaderError::FutureTime)
     ));
     let mut context = context.validate_next(next, u64::MAX).unwrap();
+    // FutureTime is not proof that the remaining validation rules would pass.
+    let mut invalid = headers[2];
+    invalid.nonce ^= 1;
+    assert!(matches!(
+        context.validate_next(invalid, 0),
+        Err(HeaderError::FutureTime)
+    ));
+    assert!(matches!(
+        context.validate_next(invalid, u64::from(invalid.time)),
+        Err(HeaderError::ProofOfWork(_))
+    ));
     // Two timestamps: use the upper median, not mean or lower median.
     context.times[..2].copy_from_slice(&[headers[2].time, 0]);
     assert!(matches!(

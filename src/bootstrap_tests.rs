@@ -17,6 +17,120 @@ use crate::header_sync::{HeaderSync, VisitEnd};
 use crate::store_config::StoreConfig;
 use crate::store_error::StoreError;
 use crate::sync_config::SyncConfig;
+use crate::sync_error::SyncError;
+
+/// Move only Tokio's monotonic clock between completed socket exchanges.
+async fn elapse_retry() {
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(3601)).await;
+    tokio::time::resume();
+}
+
+#[tokio::test]
+async fn clock_correction_retries_discovered_peer_and_preserves_pinned_state() {
+    let hs = headers();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let peer = listener.local_addr().unwrap();
+    let serving = tokio::spawn(async move {
+        let hs = headers();
+        // Repeated clock rejection must not exhaust a new discovered candidate.
+        for height in [1, 1, 1, 1, 1, 2, 2] {
+            let mut stream = peer_handshake(&listener).await;
+            assert!(matches!(
+                read(&mut stream).await,
+                NetworkMessage::GetHeaders(_)
+            ));
+            send(&mut stream, NetworkMessage::Headers(vec![hs[height]])).await;
+            // Each visit is one request. Rejected connections and explicit
+            // shutdown must both close, without an orphaned idle reader.
+            assert_eq!(
+                stream.read_u8().await.unwrap_err().kind(),
+                std::io::ErrorKind::UnexpectedEof
+            );
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chain");
+    let mut pool = crate::peer_pool_config::PeerPoolConfig::manual_only();
+    pool.discovery = true;
+    pool.discovered_for_test = vec![peer];
+    let cfg = SyncConfig {
+        peers: Vec::new(),
+        peer_pool: pool,
+        requests_per_visit: 1,
+        retry_delay: Duration::from_millis(1),
+        handshake_timeout: Duration::from_secs(2),
+        request_timeout: Duration::from_secs(2),
+        candidate_headers: 10,
+    };
+    let store_cfg = config(Vec::new(), peer, 10).store;
+    let anchor = StoreAnchor {
+        network: Network::Bitcoin,
+        height: 0,
+        hash: hs[0].block_hash(),
+        height_one_hash: hs[1].block_hash(),
+    };
+    let store = ValidatedHeaderStore::create(&path, store_cfg, anchor, &hs[..1]).unwrap();
+    let mut sync = HeaderSync::new(store, cfg.clone()).unwrap();
+    for _ in 0..4 {
+        let report = tokio::time::timeout(Duration::from_secs(5), sync.step(0))
+            .await
+            .unwrap();
+        assert_eq!(report.peer, Some(peer));
+        assert!(matches!(
+            report.result,
+            Err(SyncError::Header(HeaderError::FutureTime))
+        ));
+        assert_eq!(sync.status().unwrap().height, 0);
+        assert_eq!(sync.status().unwrap().generation, 0);
+        // Wall-clock correction alone must not bypass monotonic retry pacing.
+        assert!(matches!(
+            sync.step(u64::MAX).await.result,
+            Err(SyncError::NoPeers)
+        ));
+        elapse_retry().await;
+    }
+    assert_eq!(
+        sync.step(u64::MAX).await.result.unwrap(),
+        VisitEnd::RequestLimit
+    );
+    assert_eq!(sync.status().unwrap().height, 1);
+    assert_eq!(sync.sync_progress(), None);
+    sync.shutdown().await;
+    drop(sync);
+
+    // A backward correction does not retroactively invalidate persisted headers.
+    let store = ValidatedHeaderStore::open_pinned(&path, store_cfg).unwrap();
+    assert_eq!(store.anchor(), anchor);
+    assert_eq!(store.header(1).unwrap(), hs[1]);
+    let mut sync = HeaderSync::new(store, cfg).unwrap();
+    assert!(matches!(
+        sync.step(0).await.result,
+        Err(SyncError::Header(HeaderError::FutureTime))
+    ));
+    assert_eq!(sync.status().unwrap().height, 1);
+    assert_eq!(sync.store().protected_height().unwrap(), 0);
+    elapse_retry().await;
+    assert_eq!(
+        sync.step(u64::from(hs[2].time)).await.result.unwrap(),
+        VisitEnd::RequestLimit
+    );
+    assert_eq!(sync.status().unwrap().height, 2);
+    assert_eq!(sync.sync_progress(), None);
+    sync.shutdown().await;
+    drop(sync);
+    assert_eq!(
+        ValidatedHeaderStore::open_pinned(&path, store_cfg)
+            .unwrap()
+            .header(2)
+            .unwrap(),
+        hs[2]
+    );
+    tokio::time::timeout(Duration::from_secs(5), serving)
+        .await
+        .unwrap()
+        .unwrap();
+}
 
 fn headers() -> Vec<Header> {
     include_bytes!("../tests/data/mainnet-headers-0-2035.raw")
@@ -337,6 +451,133 @@ async fn stale_future_and_existing_destinations_fail_without_publication() {
         assert_eq!(std::fs::read(&path).unwrap(), b"do not overwrite");
         ah.abort();
         bh.abort();
+    }
+}
+
+#[tokio::test]
+async fn bootstrap_clock_correction_reuses_destination_and_reopens_without_sources() {
+    let (a, ah) = source(7, Fault::None).await;
+    let (b, bh) = source(7, Fault::None).await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let peer = listener.local_addr().unwrap();
+    let serving = tokio::spawn(async move {
+        let mut stream = peer_handshake(&listener).await;
+        assert!(matches!(
+            read(&mut stream).await,
+            NetworkMessage::GetHeaders(_)
+        ));
+        send(&mut stream, NetworkMessage::Headers(vec![headers()[1]])).await;
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chain");
+    let cfg = config(vec![a, b], peer, 10);
+    let now = u64::from(headers()[1].time);
+    for (clock, future) in [
+        (now - 7201, true),
+        (now + cfg.max_checkpoint_age.as_secs() + 1, false),
+        (now - 7201, true),
+    ] {
+        let error = bootstrap(&path, cfg.clone(), clock).await.err().unwrap();
+        if future {
+            assert!(matches!(
+                error,
+                BootstrapError::Header(HeaderError::FutureTime)
+            ));
+        } else {
+            assert!(matches!(error, BootstrapError::Stale));
+        }
+        assert!(!path.exists());
+    }
+    let store = bootstrap(&path, cfg.clone(), now).await.unwrap();
+    let anchor = store.anchor();
+    assert_eq!(anchor.height, 1);
+    drop(store);
+    ah.abort();
+    bh.abort();
+    serving.await.unwrap();
+    // Sources are gone and local time is wrong again: durable anchor authority
+    // is independent of bootstrap freshness and cannot be silently replaced.
+    assert!(matches!(
+        bootstrap(&path, cfg.clone(), 0).await,
+        Err(BootstrapError::AlreadyExists)
+    ));
+    let store = ValidatedHeaderStore::open_pinned(&path, cfg.store).unwrap();
+    assert_eq!(store.anchor(), anchor);
+    assert_eq!(store.header(1).unwrap(), headers()[1]);
+}
+
+#[tokio::test]
+async fn injected_wall_clock_extremes_do_not_change_exchange_deadlines() {
+    for handshake_stall in [true, false] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let peer = listener.local_addr().unwrap();
+        let serving = tokio::spawn(async move {
+            for _ in 0..3 {
+                let mut stream = if handshake_stall {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    assert!(matches!(
+                        read(&mut stream).await,
+                        NetworkMessage::Version(_)
+                    ));
+                    stream
+                } else {
+                    let mut stream = peer_handshake(&listener).await;
+                    assert!(matches!(
+                        read(&mut stream).await,
+                        NetworkMessage::GetHeaders(_)
+                    ));
+                    stream
+                };
+                assert_eq!(
+                    stream.read_u8().await.unwrap_err().kind(),
+                    std::io::ErrorKind::UnexpectedEof
+                );
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let hs = headers();
+        let store = ValidatedHeaderStore::create(
+            dir.path().join("chain"),
+            config(Vec::new(), peer, 10).store,
+            StoreAnchor {
+                network: Network::Bitcoin,
+                height: 0,
+                hash: hs[0].block_hash(),
+                height_one_hash: hs[1].block_hash(),
+            },
+            &hs[..1],
+        )
+        .unwrap();
+        let deadline = Duration::from_millis(100);
+        let mut sync = HeaderSync::new(
+            store,
+            SyncConfig {
+                peers: vec![peer],
+                peer_pool: crate::peer_pool_config::PeerPoolConfig::manual_only(),
+                handshake_timeout: deadline,
+                request_timeout: deadline,
+                retry_delay: Duration::from_millis(1),
+                requests_per_visit: 1,
+                candidate_headers: 10,
+            },
+        )
+        .unwrap();
+        for now in [0, u64::MAX, 0] {
+            let started = tokio::time::Instant::now();
+            let report = tokio::time::timeout(Duration::from_secs(5), sync.step(now))
+                .await
+                .unwrap();
+            assert_eq!(report.peer, Some(peer));
+            assert!(matches!(report.result, Err(SyncError::Timeout)));
+            assert!(started.elapsed() >= deadline);
+            assert_eq!(sync.status().unwrap().height, 0);
+            elapse_retry().await;
+        }
+        sync.shutdown().await;
+        tokio::time::timeout(Duration::from_secs(5), serving)
+            .await
+            .unwrap()
+            .unwrap();
     }
 }
 

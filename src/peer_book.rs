@@ -143,14 +143,17 @@ impl PeerBook {
         Some(candidates[self.rng.random_range(0..candidates.len())].addr)
     }
 
-    /// Reserve a failure and retry delay before dial/checkout, including cancellation.
-    pub fn attempted(&mut self, addr: SocketAddr, minimum: Duration) {
+    /// Reserve a failure and retry delay, returning the prior count for this attempt.
+    pub fn attempted(&mut self, addr: SocketAddr, minimum: Duration) -> Option<u8> {
         if let Some(e) = self.entries.iter_mut().find(|e| e.addr == addr) {
+            let previous = e.failures;
             e.failures = e.failures.saturating_add(1);
             let seconds = (30u64 << e.failures.min(7)).min(3600);
             let backoff = Duration::from_secs(self.rng.random_range(seconds / 2..=seconds));
             e.retry = Instant::now() + minimum.max(backoff);
+            return Some(previous);
         }
+        None
     }
 
     /// Clear failure pacing after service; promote only checked useful service.

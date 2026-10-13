@@ -320,6 +320,9 @@ impl HeaderSync {
     /// each with at most 32 frames and 2 MB received bytes. A peer cannot extend
     /// deadlines using pings, fragmented frames or incremental progress.
     /// `now` is a trusted caller wall-clock snapshot for contextual header checks.
+    /// Future-time rejection discards the connection but preserves retry eligibility:
+    /// it grants no useful-service credit and retains monotonic backoff. Correcting
+    /// `now` never revalidates already-selected history or proves tip freshness.
     /// Cancel by dropping this future (for example with `tokio::select!`); inspect
     /// `status` afterward because a completed atomic batch may have made progress.
     pub async fn step(&mut self, now: u64) -> SyncReport {
@@ -369,6 +372,10 @@ impl HeaderSync {
         }
         if result.is_ok() {
             self.pool.release(connection, useful);
+        } else if matches!(result, Err(SyncError::Header(HeaderError::FutureTime))) {
+            // A caller clock behind the peer's timestamps must not exhaust a
+            // discovered candidate's failure allowance. Still discard the stream.
+            self.pool.rejected_time(&connection);
         }
         SyncReport { peer, result }
     }

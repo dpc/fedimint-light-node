@@ -26,6 +26,18 @@ struct Slot {
     idle: IdlePeer,
 }
 
+/// Foreground ownership and the failure reservation made for this exact attempt.
+struct Lease {
+    /// Numeric dial target, which cannot be replaced while exclusively leased.
+    addr: SocketAddr,
+    /// Stable/explorer role before checkout.
+    stable: bool,
+    /// Monotonic connection retirement deadline.
+    expires: Instant,
+    /// Failure count before this attempt, including saturation at the counter limit.
+    previous_failures: Option<u8>,
+}
+
 /// Bounded caller-driven dial policy with actively maintained idle connections.
 ///
 /// No runtime is created. At most four sockets and four idle tasks exist; a dial
@@ -40,7 +52,7 @@ pub(crate) struct PeerPool {
     /// Established idle slots.
     slots: Vec<Slot>,
     /// One foreground slot reserved before await, including canceled acquisition.
-    leased: Option<(SocketAddr, bool, Instant)>,
+    leased: Option<Lease>,
     /// Keep canceled checkout/retirement handles until joined before any new dial.
     retiring: Vec<IdlePeer>,
     /// Clean-boundary transfer in progress; cancellation must not detach its handle.
@@ -128,7 +140,7 @@ impl PeerPool {
 
     /// Identify an attempt reserved before a canceled handshake or pacing wait.
     pub fn leased_address(&self) -> Option<SocketAddr> {
-        self.leased.map(|(addr, _, _)| addr)
+        self.leased.as_ref().map(|lease| lease.addr)
     }
 
     /// Harvest coalesced hints and retire failed, old or exploratory sockets.
@@ -230,9 +242,13 @@ impl PeerPool {
                 .config
                 .rotation
                 .mul_f64(self.book.rng.random_range(1.0..2.0));
-            self.leased = Some((addr, stable, Instant::now() + rotation));
+            self.leased = Some(Lease {
+                addr,
+                stable,
+                expires: Instant::now() + rotation,
+                previous_failures: self.book.attempted(addr, pacing),
+            });
             self.failed_exploration = true;
-            self.book.attempted(addr, pacing);
             let when = self.next_dial.max(Instant::now()) + pacing;
             self.next_dial = when;
             sleep_until(when).await;
@@ -259,8 +275,12 @@ impl PeerPool {
         }
         // Release appends to the back, giving every live connection one turn.
         let slot = self.slots.remove(0);
-        self.leased = Some((slot.addr, slot.stable, slot.expires));
-        self.book.attempted(slot.addr, pacing);
+        self.leased = Some(Lease {
+            addr: slot.addr,
+            stable: slot.stable,
+            expires: slot.expires,
+            previous_failures: self.book.attempted(slot.addr, pacing),
+        });
         self.checking_out = Some(slot.idle);
         let result = timeout(
             deadline,
@@ -275,9 +295,37 @@ impl PeerPool {
         result
     }
 
+    /// Discard a time-rejected lease without attributing local clock uncertainty to a peer.
+    ///
+    /// Only this attempt's provisional strike is undone. Its monotonic retry
+    /// reservation and failed-exploration fallback remain, with no useful credit.
+    /// The exclusive foreground owner calls this before dropping the connection;
+    /// no book aging/admission or replacement occurs during a lease.
+    pub fn rejected_time(&mut self, peer: &PeerConnection) {
+        if !self
+            .leased
+            .as_ref()
+            .is_some_and(|lease| lease.addr == peer.addr)
+        {
+            return;
+        }
+        let lease = self.leased.take().expect("matched lease");
+        if let Some(previous) = lease.previous_failures
+            && let Some(entry) = self.book.entries.iter_mut().find(|e| e.addr == lease.addr)
+        {
+            entry.failures = previous;
+        }
+    }
+
     /// Return only a fully completed exchange; useful means checked headers or body.
     pub fn release(&mut self, mut peer: PeerConnection, useful: bool) {
-        let Some((addr, mut stable, mut expires)) = self.leased.take() else {
+        let Some(Lease {
+            addr,
+            mut stable,
+            mut expires,
+            ..
+        }) = self.leased.take()
+        else {
             return;
         };
         if addr != peer.addr {

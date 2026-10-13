@@ -49,6 +49,16 @@ failures. Explicit manual peers remain configured through failures and use fair
 retry order. New entries age out after one day; successful entries after seven days,
 including across cache reload.
 
+Future-time header rejection is not an attributable peer failure: a caller clock
+behind the header can cause it. The connection still closes, its monotonic retry
+reservation remains, and it earns no useful-service credit. Only that attempt's
+provisional failure count is undone; previous failures and exploratory fallback
+remain. Repeated future-time rejection therefore cannot exhaust a new candidate's
+three-failure allowance, but deliberately future-dated peers still consume bounded
+visits with backoff. This does not certify other header rules that validation has
+not yet reached. Correcting the caller's clock allows retry, not automatic
+acceptance or a freshness claim.
+
 The pool has **one global foreground header candidate and block payload/decoder**,
 not one per connection. Existing aggregate body/submission budgets include new
 handshakes. Returned blocks belong to callers. Idle traffic has a separate shared

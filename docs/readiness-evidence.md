@@ -172,6 +172,44 @@ network truncation/cancellation and validation-clock coverage. This campaign did
 not reproduce every power-loss ordering, every corruption location, real kernel
 OOM, or OS clock jumps.
 
+## Injected clock correction — PASS within scope
+
+Offline loopback regressions supply backward and forward wall-clock snapshots to
+the existing `HeaderSync::step(now)` and bootstrap APIs. They do not modify the
+host clock. This exercise exposed a concrete retry defect: three future-time
+rejections disabled a never-useful discovered candidate even after clock
+correction. Header synchronization now removes only the current attempt's
+provisional failure strike for `FutureTime`, while discarding its connection and
+retaining monotonic backoff, prior penalties and exploratory fallback. It neither
+promotes the peer nor relaxes header validation.
+
+The owner-level regression rejects the same discovered candidate four times,
+checks that an immediate forward correction cannot bypass retry pacing, then
+selects its header after simulated monotonic backoff. It reopens the persisted
+store, rejects the next header under a backward clock, and accepts it after
+correction without a recovery latch or changed protection floor. Bootstrap
+alternates future/stale rejection at the same destination before successfully
+publishing; offline reopen preserves the pinned anchor after sources disappear.
+Additional checks cover prior failure counts (including saturation), absence of
+useful credit, and an invalid-PoW header still failing after clock correction.
+Selected state continues to report no synchronization/freshness percentage.
+
+Separate loopback visits stall the handshake or header request with supplied
+clock values `0`, `u64::MAX`, then `0`; each still expires at its monotonic
+exchange deadline. Tokio time is advanced only between completed exchanges to
+avoid waiting through peer backoff. Dial pacing, request deadlines, idle budgets,
+and rotation use Tokio monotonic instants, not the supplied Unix timestamp;
+existing pool tests cover idle and rotation behavior. These are API-level
+clock-input regressions, not OS clock-jump, suspend/resume, time synchronization,
+power-loss, or global chain-freshness guarantees.
+
+Reproduce with:
+
+```sh
+nix develop -c cargo test --lib clock
+nix develop -c cargo test --lib time_rejection
+```
+
 ## Coverage-guided fuzzing and independent shared checks — PASS within scope
 
 The isolated [fuzz workspace](../fuzz/README.md) adds block and transaction

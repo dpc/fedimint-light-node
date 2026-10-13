@@ -67,6 +67,43 @@ async fn acquire(pool: &mut PeerPool) -> PeerConnection {
     .unwrap()
 }
 
+#[tokio::test]
+async fn time_rejection_preserves_prior_strikes_retry_and_nonuseful_status() {
+    for prior in [0, 2, u8::MAX] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let serving = tokio::spawn(server(listener));
+        let mut pool = PeerPool::new(&[addr], PeerPoolConfig::manual_only()).unwrap();
+        pool.book.entries[0].failures = prior;
+        let peer = acquire(&mut pool).await;
+        let mut remote = serving.await.unwrap();
+        let retry = pool.book.entries[0].retry;
+        assert!(retry > Instant::now());
+        pool.rejected_time(&peer);
+        assert!(pool.leased.is_none());
+        assert_eq!(pool.book.entries[0].failures, prior);
+        assert_eq!(pool.book.entries[0].retry, retry);
+        assert!(pool.book.entries[0].useful.is_none());
+        assert!(pool.failed_exploration);
+        assert!(pool.slots.is_empty());
+        assert!(pool.book.choose(&[], false).is_none());
+        // Settlement is single-use, not a generic penalty-clearing operation.
+        pool.book.attempted(addr, Duration::ZERO);
+        pool.rejected_time(&peer);
+        assert_eq!(pool.book.entries[0].failures, prior.saturating_add(1));
+        drop(peer);
+        assert_eq!(
+            timeout(Duration::from_secs(2), remote.read_u8())
+                .await
+                .unwrap()
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+        pool.shutdown().await;
+    }
+}
+
 // These fixtures exercise the managed downloader below HeaderSync admission:
 // the mined testnet body is not represented as a selected mainnet header.
 #[tokio::test]
