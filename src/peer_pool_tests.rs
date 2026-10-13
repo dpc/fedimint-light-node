@@ -67,6 +67,148 @@ async fn acquire(pool: &mut PeerPool) -> PeerConnection {
     .unwrap()
 }
 
+// These fixtures exercise the managed downloader below HeaderSync admission:
+// the mined testnet body is not represented as a selected mainnet header.
+#[tokio::test]
+async fn hostile_body_leases_close_and_recover_within_attempt_policy() {
+    use crate::block_decode::BlockDecodeLimits;
+    use crate::block_download::download;
+    use crate::block_download_config::BlockDownloadConfig;
+    use crate::block_download_error::{BlockDownloadError, BlockPeerError};
+    use crate::decode_error::DecodeError;
+    use crate::frame_error::FrameError;
+    use crate::integrity_error::IntegrityError;
+
+    let original: bitcoin::Block =
+        deserialize(include_bytes!("../tests/data/testnet-segwit.raw")).unwrap();
+    for failure in ["witness", "truncated", "stalled"] {
+        for attempts in [1, 2] {
+            let bad = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let good = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addresses = [bad.local_addr().unwrap(), good.local_addr().unwrap()];
+            let mut corrupt = original.clone();
+            corrupt.txdata[0].input[0].witness = bitcoin::Witness::from_slice(&[[1; 32]]);
+            assert_eq!(corrupt.block_hash(), original.block_hash());
+            assert!(corrupt.check_merkle_root());
+            assert!(!corrupt.check_witness_commitment());
+            let wire = serialize(&RawNetworkMessage::new(
+                Network::Bitcoin.magic(),
+                NetworkMessage::Block(corrupt),
+            ));
+            let bad_task = tokio::spawn(async move {
+                let mut stream = server(bad).await;
+                assert!(matches!(
+                    read(&mut stream).await,
+                    NetworkMessage::GetData(_)
+                ));
+                if failure == "witness" {
+                    stream.write_all(&wire).await.unwrap();
+                } else {
+                    stream.write_all(&wire[..31]).await.unwrap();
+                    if failure == "truncated" {
+                        stream.shutdown().await.unwrap();
+                    }
+                }
+                // A partial/stalled body must be dropped, never returned to an
+                // idle driver. Keep the read half open to observe client closure.
+                assert_eq!(
+                    timeout(Duration::from_secs(3), stream.read_u8())
+                        .await
+                        .unwrap()
+                        .unwrap_err()
+                        .kind(),
+                    std::io::ErrorKind::UnexpectedEof
+                );
+            });
+            let body = original.clone();
+            let good_task = tokio::spawn(async move {
+                let mut stream = server(good).await;
+                assert!(matches!(
+                    read(&mut stream).await,
+                    NetworkMessage::GetData(_)
+                ));
+                send(&mut stream, NetworkMessage::Block(body))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    timeout(Duration::from_secs(3), stream.read_u8())
+                        .await
+                        .unwrap()
+                        .unwrap_err()
+                        .kind(),
+                    std::io::ErrorKind::UnexpectedEof
+                );
+            });
+            let mut config = PeerPoolConfig::manual_only();
+            config.connections = 1;
+            let mut pool = PeerPool::new(&addresses, config).unwrap();
+            let mut budget = BlockDownloadConfig {
+                max_attempts: attempts,
+                total_timeout: Duration::from_secs(2),
+                visit_timeout: Duration::from_millis(250),
+                max_received_bytes: 20_000,
+                decode: BlockDecodeLimits {
+                    max_payload_bytes: 5_000,
+                    max_elements: 1_000,
+                },
+            };
+            let result = download(
+                &mut pool,
+                Duration::from_millis(1),
+                481_824,
+                481_824,
+                original.block_hash(),
+                budget,
+            )
+            .await;
+            let block = if attempts == 1 {
+                let Err(BlockDownloadError::Unavailable { attempts: 1, last }) = result else {
+                    panic!("unexpected {failure} result: {result:?}");
+                };
+                match failure {
+                    "witness" => assert!(matches!(
+                        last,
+                        BlockPeerError::Body(FrameError::Block(DecodeError::Integrity(
+                            IntegrityError::WitnessCommitment
+                        )))
+                    )),
+                    "stalled" => assert!(matches!(last, BlockPeerError::Timeout)),
+                    _ => assert!(matches!(last, BlockPeerError::Peer(SyncError::Io(_)))),
+                }
+                bad_task.await.unwrap();
+                assert_eq!(pool.counts().0, 0);
+                // A failed lease marker is bookkeeping, not a retained socket.
+                // The next acquisition must clear it and select the other peer.
+                budget.max_attempts = 1;
+                download(
+                    &mut pool,
+                    Duration::from_millis(1),
+                    481_824,
+                    481_824,
+                    original.block_hash(),
+                    budget,
+                )
+                .await
+                .unwrap()
+            } else {
+                bad_task.await.unwrap();
+                result.unwrap()
+            };
+            assert_eq!(block, original);
+            assert!(pool.leased.is_none());
+            assert!(pool.checking_out.is_none());
+            assert!(pool.retiring.is_empty());
+            assert_eq!(pool.slots.len(), 1);
+            assert_eq!(pool.slots[0].addr, addresses[1]);
+            assert!(pool.book.entries[0].useful.is_none());
+            assert!(pool.book.entries[1].useful.is_some());
+            pool.shutdown().await;
+            assert_eq!(pool.counts().0, 0);
+            good_task.await.unwrap();
+        }
+    }
+}
+
 #[tokio::test]
 async fn core_legacy_alert_threshold_does_not_disconnect_modern_handshake() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

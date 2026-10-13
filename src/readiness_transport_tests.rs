@@ -1,5 +1,8 @@
 //! Finite offline end-to-end pressure measurement with externally pinned real data.
 
+#[path = "readiness_body_recovery_tests.rs"]
+mod body_recovery;
+
 use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;

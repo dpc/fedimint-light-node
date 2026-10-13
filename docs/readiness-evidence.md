@@ -399,6 +399,61 @@ nix develop -c python3 misc/readiness-transport.py \
   --binary "$LIBTEST" --headers "$HEADERS" --block "$BLOCK" --directory "$NEW_REPORT"
 ```
 
+## Managed body-failure recovery — finite offline regression
+
+The normal test
+`peer_pool::tests::hostile_body_leases_close_and_recover_within_attempt_policy`
+now exercises the actual managed download path with checksum-valid witness
+corruption, a truncated frame and a stalled partial frame. Each failure runs
+with both one and two allowed attempts. One attempt returns the precise failure;
+a following request succeeds through the other peer. Two attempts recover within
+the original request. Failed sockets reach EOF, never earn useful-service credit
+or enter an idle slot, and successful recovery clears lease/checkout ownership.
+The configured pool cap is one; shutdown joins its remaining idle driver.
+This small checked-in Bitcoin test network body deliberately exercises retrieval
+**below mainnet header admission**, not a selected mainnet chain.
+
+The ignored Linux test
+`readiness_transport_tests::body_recovery::selected_body_failures_recover_through_managed_pool_and_rpc`
+closes that admission gap using the same pinned mainnet header replay and
+height-934996 body as the pressure test. It warms four real loopback peers,
+then exercises all three failures through actual authenticated HTTP, GuardianRpc,
+HeaderSync and the managed pool. Witness corruption changes only the coinbase
+witness reserved value: the selected mined header, transaction Merkle root and
+wire checksum still match, but the witness commitment does not.
+
+With unmodified RPC budgets, one hostile response recovers on the second peer;
+two hostile responses exhaust the two-attempt policy and return `-32012` without
+body bytes. Cheap reads and a following body request then succeed, with the
+original bytes supplied by a different eligible peer. The test observes hostile
+socket EOF, a peak of four accepted P2P sockets, zero remaining HTTP tasks,
+writers, queues or fixture sockets after joined shutdown, and unchanged selected
+tip, retained bounds and an explicitly advanced protection checkpoint on reopen.
+No retry, admission, timeout or protection policy changes are involved.
+
+The October 13, 2026 finite run passed all three modes in 24.23 seconds including
+replay (`target/readiness/managed-body-recovery-concurrent.log`). Fixture listeners
+accept concurrent connections, so duplicate client sockets cannot hide behind
+an existing connection in a serial accept loop. The first fixture
+run exposed a test-observer reset omission between modes; that test-only issue was
+fixed before the passing run. An earlier invocation used a nonexistent header
+path and did not execute a scenario. These are regression observations, not a
+long availability campaign, an Internet-latency result or a hard process-wide
+resource guarantee. The near-limit million-element synthetic body remains
+covered only below mainnet admission by the separate direct exchange tests.
+
+To reproduce without a network connection:
+
+```sh
+READINESS_HEADERS="$HEADERS" READINESS_BLOCK="$BLOCK" \
+  nix develop -c cargo test --release --lib \
+  selected_body_failures_recover_through_managed_pool_and_rpc -- --ignored --nocapture
+```
+
+Both external fixture digests are checked before use. This regression is ignored
+in ordinary CI because the large public-ledger fixtures are not checked in; the
+small managed-pool regression runs in ordinary CI.
+
 ## Extended campaigns — pending, not completed evidence
 
 A 24-hour soak began October 13, 2026 at 01:12:50 UTC, but was deliberately
