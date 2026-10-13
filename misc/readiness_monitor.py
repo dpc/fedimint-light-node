@@ -3,6 +3,8 @@
 import pathlib
 import threading
 import os
+import errno
+import subprocess
 
 
 class SafetyMonitor:
@@ -27,30 +29,24 @@ class SafetyMonitor:
             if child is None or child.poll() is not None:
                 continue
             try:
-                status = pathlib.Path(f"/proc/{child.pid}/status").read_text()
-                memory = {}
-                for line in status.splitlines():
-                    if line.startswith(("VmRSS:", "VmHWM:")):
-                        memory[line.split(":")[0]] = int(line.split()[1])
-                descriptors = list(pathlib.Path(f"/proc/{child.pid}/fd").iterdir())
-                sockets = 0
-                for descriptor in descriptors:
+                try:
+                    snapshot = self.process_snapshot(child)
+                except OSError as error:
+                    if error.errno not in (errno.ENOENT, errno.ESRCH, errno.EACCES, errno.EPERM):
+                        raise
+                    # Linux can deny access to a dying child's fd directory.
+                    # poll() may return None while another thread owns Popen's
+                    # wait lock, even for a zombie. Confirm this exact child's
+                    # exit, never infer it from permissions or a replacement.
                     try:
-                        sockets += os.readlink(descriptor).startswith("socket:")
-                    except FileNotFoundError:
-                        pass  # A concurrently closed descriptor is not a monitor failure.
-                ticks = pathlib.Path(f"/proc/{child.pid}/stat").read_text().rsplit(")", 1)[1].split()
-                snapshot = {
-                    "pid": child.pid,
-                    "rss_kib": memory.get("VmRSS", 0),
-                    "hwm_kib": memory.get("VmHWM", 0),
-                    "fd": len(descriptors),
-                    "sockets": sockets,
-                    "user_seconds": int(ticks[11]) / os.sysconf("SC_CLK_TCK"),
-                    "system_seconds": int(ticks[12]) / os.sysconf("SC_CLK_TCK"),
+                        child.wait(timeout=0.1)
+                    except subprocess.TimeoutExpired:
+                        raise error
+                    continue
+                snapshot.update({
                     "disk_bytes": self.disk_bytes(),
                     "namespace_network_bytes": self.traffic(),
-                }
+                })
                 self.latest = snapshot
                 for key in self.peaks:
                     self.peaks[key] = max(self.peaks[key], snapshot[key])
@@ -61,14 +57,37 @@ class SafetyMonitor:
                 if self.overflow.is_set():
                     raise RuntimeError("log queue safety stop")
             except Exception as error:
-                # A process can disappear during a planned restart; do not mistake
-                # that for a sampling failure. All other sampling errors fail closed.
-                if child.poll() is not None:
-                    continue
+                # Live unobservable children and all non-process sampling errors
+                # fail closed, even when the child exits during error handling.
                 self.error = str(error)
                 child.kill()
                 child.wait(timeout=10)
                 return
+
+    def process_snapshot(self, child):
+        """Read only this child's procfs data, separately from resource gates."""
+        status = pathlib.Path(f"/proc/{child.pid}/status").read_text()
+        memory = {}
+        for line in status.splitlines():
+            if line.startswith(("VmRSS:", "VmHWM:")):
+                memory[line.split(":")[0]] = int(line.split()[1])
+        descriptors = list(pathlib.Path(f"/proc/{child.pid}/fd").iterdir())
+        sockets = 0
+        for descriptor in descriptors:
+            try:
+                sockets += os.readlink(descriptor).startswith("socket:")
+            except FileNotFoundError:
+                pass  # A concurrently closed descriptor is not a monitor failure.
+        ticks = pathlib.Path(f"/proc/{child.pid}/stat").read_text().rsplit(")", 1)[1].split()
+        return {
+            "pid": child.pid,
+            "rss_kib": memory.get("VmRSS", 0),
+            "hwm_kib": memory.get("VmHWM", 0),
+            "fd": len(descriptors),
+            "sockets": sockets,
+            "user_seconds": int(ticks[11]) / os.sysconf("SC_CLK_TCK"),
+            "system_seconds": int(ticks[12]) / os.sysconf("SC_CLK_TCK"),
+        }
 
     def disk_bytes(self):
         """Count disposable files, including nested test stores when requested."""

@@ -394,9 +394,28 @@ seconds. Both pinned binaries contain `__asan_init`. This verifies the runner,
 not the planned long coverage. The long sequential campaign started October 13,
 2026 at about 01:43 UTC in `/tmp/public/cg3s-fuzz-4cpuh-47Mgc`, recorded by
 `target/readiness/fuzz-4cpuh-path`; its pinned snapshot includes binary, script
-and initial corpus digests. The source lock is independent of this campaign.
-Long campaign outcomes require separate logs and
-assessment; neither they nor the running soak are implied passes.
+and initial corpus digests. That attempt **failed** after six block chunks:
+each chunk exited successfully, but the monitor reported permission denied for
+`/proc/3731266/fd`. The child used 1,799.104159 CPU seconds; five chunks contributed
+24,562,329 accepted executions before the sixth chunk's 4,443,190 executions were
+excluded by the failed monitoring gate. No crash artifacts were recorded.
+The transaction target did not run. This is not four CPU hours of successful
+coverage, and the failed attempt remains preserved in its original directory.
+
+A local reproduction showed that Linux denies access to a zombie's descriptor
+directory while Python's `poll()` can still return `None` when another waiter
+holds its internal lock. This explains a possible exit-time race, not a proven
+diagnosis of the original PID, whose live state was not captured. The monitor now
+allows at most 100 ms to confirm termination of the exact sampled child after
+specific process-file access errors. A live or uncertain unobservable child still
+fails closed; disk and resource errors remain fatal even if the child exits.
+Regressions exercise real zombie permissions with waiter contention, a live
+non-dumpable child, and an independent disk error coinciding with exit.
+Any replacement campaign requires a new pinned snapshot and fresh CPU accounting;
+the failed attempt is never silently combined into a continuous pass.
+
+The source lock is independent of long campaigns. Their outcomes require
+separate logs and assessment; neither they nor the running soak are implied passes.
 
 **Still not completed:**
 

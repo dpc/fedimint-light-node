@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 from readiness_watchdog import run_owned
 from readiness_monitor import SafetyMonitor
@@ -134,6 +135,100 @@ class EvidenceSafety(unittest.TestCase):
                 self.assertEqual(process.returncode, -9)
                 self.assertIn("disk", monitor.error)
                 self.assertGreater(monitor.peaks["disk_bytes"], 2 * 1024**3)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+                monitor.close()
+
+    def test_monitor_confirms_zombie_exit_despite_busy_waiter(self):
+        """Exercise real zombie procfs permissions and Popen's poll lock race."""
+        with tempfile.TemporaryDirectory() as directory:
+            process = subprocess.Popen([sys.executable, "-c", "pass"])
+            os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
+            denied = threading.Event()
+            original = pathlib.Path.iterdir
+
+            def observe(path):
+                try:
+                    yield from original(path)
+                except PermissionError:
+                    if str(path) == f"/proc/{process.pid}/fd":
+                        denied.set()
+                    raise
+
+            monitor = SafetyMonitor(
+                lambda: process, pathlib.Path(directory), lambda: 0, 1, threading.Event()
+            )
+            # Model a concurrent Popen.wait() holding its internal lock before
+            # publishing returncode. poll() deliberately cannot decide yet.
+            process._waitpid_lock.acquire()
+            lock_held = True
+            try:
+                self.assertIsNone(process.poll())
+                with mock.patch.object(pathlib.Path, "iterdir", observe):
+                    monitor.start()
+                    self.assertTrue(denied.wait(timeout=3), "zombie fd access was not denied")
+                    process._waitpid_lock.release()
+                    lock_held = False
+                    self.assertEqual(process.wait(timeout=3), 0)
+                    monitor.close()
+                    self.assertIsNone(monitor.error)
+            finally:
+                if lock_held:
+                    process._waitpid_lock.release()
+                process.wait(timeout=3)
+                monitor.close()
+
+    def test_monitor_kills_live_unobservable_child(self):
+        """A real non-dumpable child must not get a permission-error exemption."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            ready = root / "ready"
+            process = subprocess.Popen([
+                sys.executable, "-c",
+                "import ctypes,pathlib,time;"
+                "assert ctypes.CDLL(None).prctl(4,0,0,0,0)==0;"
+                f"pathlib.Path({str(ready)!r}).touch();"
+                "time.sleep(30)",
+            ])
+            monitor = SafetyMonitor(
+                lambda: process, root, lambda: 0, 1, threading.Event()
+            )
+            try:
+                deadline = time.monotonic() + 3
+                while not ready.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(ready.exists(), "non-dumpable child did not start")
+                monitor.start()
+                self.assertEqual(process.wait(timeout=3), -9)
+                monitor.close()
+                self.assertIn("Permission denied", monitor.error)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+                if monitor.thread.ident is not None:
+                    monitor.close()
+
+    def test_monitor_disk_error_remains_fatal_after_child_exit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            process = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(30)"])
+            monitor = SafetyMonitor(
+                lambda: process, pathlib.Path(directory), lambda: 0, 1, threading.Event()
+            )
+
+            def inaccessible_disk():
+                process.kill()
+                process.wait(timeout=3)
+                raise PermissionError("inaccessible evidence directory")
+
+            try:
+                with mock.patch.object(monitor, "disk_bytes", inaccessible_disk):
+                    monitor.start()
+                    process.wait(timeout=3)
+                    monitor.close()
+                self.assertEqual(monitor.error, "inaccessible evidence directory")
             finally:
                 if process.poll() is None:
                     process.kill()
