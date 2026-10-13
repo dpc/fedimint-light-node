@@ -63,17 +63,60 @@ pub async fn run(
         Command::Status => {
             output::status(&ValidatedHeaderStore::open_pinned(&options.db, config)?)?;
         }
+        Command::Checkpoint { output } => {
+            let store = ValidatedHeaderStore::open_pinned(&options.db, config)?;
+            crate::recovery::identity(&store, options.guardian_id)?;
+            crate::recovery::write_json(&output, &crate::recovery::state(&store)?)?;
+        }
+        Command::Backup { output, manifest } => {
+            let store = ValidatedHeaderStore::open_pinned(&options.db, config)?;
+            crate::recovery::identity(&store, options.guardian_id)?;
+            crate::recovery::backup(&store, config, &output, &manifest)?;
+        }
+        Command::Restore {
+            backup,
+            manifest,
+            expected_state,
+        } => {
+            crate::recovery::restore(
+                &backup,
+                &manifest,
+                &expected_state,
+                &options.db,
+                config,
+                options.guardian_id,
+            )?;
+        }
+        Command::BindGuardian { guardian } => {
+            let mut store = ValidatedHeaderStore::open_pinned(&options.db, config)?;
+            store.bind_guardian(guardian.preflight(options.guardian_id)?)?;
+            output::status(&store)?;
+        }
         Command::Serve {
             network,
             rpc_bind,
             rpc_credentials,
             fake_bitcoind,
             allow_rpc_submission,
+            standalone,
+            guardian,
         } => {
             use fedimint_light_node::guardian_rpc::{GuardianRpc, SYNTHETIC_STATUS_WARNING};
             use fedimint_light_node::guardian_rpc_config::GuardianRpcConfig;
             let (username, password) = crate::rpc_credentials::read(&rpc_credentials)?;
             let store = ValidatedHeaderStore::open_pinned(&options.db, config)?;
+            if standalone {
+                if options.guardian_id.is_some() || guardian.is_present() {
+                    return Err("--standalone cannot include guardian state".into());
+                }
+                crate::recovery::identity(&store, None)?;
+                eprintln!("mode=standalone-smoke guardian_coordination=absent");
+            } else {
+                store.preflight_guardian(guardian.preflight(options.guardian_id)?)?;
+                eprintln!(
+                    "mode=bound-guardian-manual preflight=passed automatic_commit_coordination=absent"
+                );
+            }
             output::status(&store)?;
             let mut sync_config =
                 network.sync_config(config.header_capacity.get(), 1, 8_000, 1, peer_cache);
@@ -169,6 +212,7 @@ pub async fn run(
         }
         Command::Protect { height, hash } => {
             let mut store = ValidatedHeaderStore::open_pinned(&options.db, config)?;
+            crate::recovery::identity(&store, options.guardian_id)?;
             store.protect_through(height, hash)?;
             output::status(&store)?;
         }

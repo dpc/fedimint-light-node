@@ -67,7 +67,7 @@ impl RpcRequest {
 /// Bounded public error dialect, with local failures distinct from peer failures.
 pub(crate) struct RpcError {
     /// JSON-RPC standard or documented service-specific error code.
-    code: i32,
+    pub(crate) code: i32,
     /// Static diagnostic; never echo credentials or transaction bytes.
     pub message: &'static str,
     /// Local corruption/storage failure stops the owner rather than retrying peers.

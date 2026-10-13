@@ -15,6 +15,42 @@ use crate::store_error::StoreError;
 pub(crate) const META: TableDefinition<u8, &[u8]> = TableDefinition::new("metadata");
 pub(crate) const HEADERS: TableDefinition<u64, &[u8]> = TableDefinition::new("headers");
 pub(crate) const CONTEXTS: TableDefinition<u64, &[u8]> = TableDefinition::new("contexts");
+/// Optional extension in metadata key 1; old unbound stores remain readable.
+/// Operationally bound stores must never be opened by binaries ignoring this record.
+#[derive(Clone, Decode, Encode)]
+pub(crate) struct OperationalMetadata {
+    /// Independently versioned extension, without changing schema-v2 records.
+    version: u32,
+    /// Immutable guardian database identity, absent for standalone use.
+    pub(crate) guardian: Option<[u8; 32]>,
+    /// Hash at the monotonic protected height, even after its header is pruned.
+    pub(crate) protected_hash: [u8; 32],
+}
+
+impl OperationalMetadata {
+    /// Construct the current operational extension.
+    pub(crate) fn new(guardian: Option<[u8; 32]>, protected_hash: [u8; 32]) -> Self {
+        Self {
+            version: 1,
+            guardian,
+            protected_hash,
+        }
+    }
+
+    /// Encode a bounded, fixed-layout operational record.
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        bincode::encode_to_vec(self, codec()).expect("fixed operational metadata")
+    }
+
+    /// Reject unknown extensions rather than silently losing their safety meaning.
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, StoreError> {
+        let record: Self = decode_exact(bytes)?;
+        if record.version != 1 {
+            return Err(StoreError::Corrupt("unsupported operational metadata"));
+        }
+        Ok(record)
+    }
+}
 const VERSION: u32 = 2;
 const MAGIC: [u8; 8] = *b"FLNSTORE";
 const MAX_RECORD_BYTES: usize = 256;

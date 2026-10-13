@@ -46,6 +46,302 @@ fn create(db: &Path) -> Vec<Header> {
 }
 
 #[test]
+fn stopped_binding_backup_restore_requires_current_independent_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("chain");
+    let headers = create(&db);
+    let id = "0123456789abcdef".repeat(4);
+    let hash = headers[2].block_hash().to_string();
+    stdout(
+        &command(&db)
+            .args(["protect", "--height", "2", "--hash", &hash])
+            .output()
+            .unwrap(),
+    );
+    stdout(
+        &command(&db)
+            .args([
+                "--guardian-id",
+                &id,
+                "bind-guardian",
+                "--committed-height",
+                "2",
+                "--committed-hash",
+                &hash,
+                "--oldest-needed",
+                "3",
+            ])
+            .output()
+            .unwrap(),
+    );
+    let original = stdout(&command(&db).arg("status").output().unwrap());
+    assert!(original.contains(&format!("guardian_id={id}")));
+    {
+        let store = ValidatedHeaderStore::open_pinned(
+            &db,
+            StoreConfig {
+                header_capacity: 8.try_into().unwrap(),
+                cache_bytes: (1024 * 1024).try_into().unwrap(),
+            },
+        )
+        .unwrap();
+        let bytes: [u8; 32] = [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef]
+            .repeat(4)
+            .try_into()
+            .unwrap();
+        assert_eq!(store.guardian_id().unwrap(), Some(bytes));
+    }
+    assert!(
+        !command(&db)
+            .args([
+                "protect",
+                "--height",
+                "3",
+                "--hash",
+                &headers[3].block_hash().to_string()
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let checkpoint = dir.path().join("current-state.json");
+    stdout(
+        &command(&db)
+            .args(["--guardian-id", &id, "checkpoint", "--output"])
+            .arg(&checkpoint)
+            .output()
+            .unwrap(),
+    );
+    let backup = dir.path().join("backup");
+    let manifest = dir.path().join("manifest.json");
+    stdout(
+        &command(&db)
+            .args(["--guardian-id", &id, "backup", "--output"])
+            .arg(&backup)
+            .arg("--manifest")
+            .arg(&manifest)
+            .output()
+            .unwrap(),
+    );
+    let restored = dir.path().join("restored");
+    let restore = |destination: &Path, identity: &str| {
+        command(destination)
+            .args(["--guardian-id", identity, "restore", "--backup"])
+            .arg(&backup)
+            .arg("--manifest")
+            .arg(&manifest)
+            .arg("--expected-state")
+            .arg(&checkpoint)
+            .output()
+            .unwrap()
+    };
+    assert!(!restore(&restored, &"43".repeat(32)).status.success());
+    assert!(!restored.exists());
+    stdout(&restore(&restored, &id));
+    assert_eq!(
+        stdout(&command(&restored).arg("status").output().unwrap()),
+        original
+    );
+    assert!(!restore(&restored, &id).status.success()); // No overwrite.
+    // A newer independently retained floor rejects an otherwise intact old backup.
+    let mut current: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
+    current["protected_height"] = 3.into();
+    current["protected_hash"] = headers[3].block_hash().to_string().into();
+    std::fs::write(&checkpoint, serde_json::to_vec(&current).unwrap()).unwrap();
+    let absent = dir.path().join("absent");
+    assert!(!restore(&absent, &id).status.success());
+    assert!(!absent.exists());
+    // Restore is impossible with only the backup's own state and a missing manifest.
+    std::fs::remove_file(&manifest).unwrap();
+    assert!(!restore(&absent, &id).status.success());
+    assert!(!absent.exists());
+}
+
+#[test]
+fn backup_integrity_config_and_interrupted_publication_fail_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("chain");
+    create(&db);
+    let backup = dir.path().join("backup");
+    let manifest = dir.path().join("manifest");
+    let checkpoint = dir.path().join("checkpoint");
+    stdout(
+        &command(&db)
+            .args(["checkpoint", "--output"])
+            .arg(&checkpoint)
+            .output()
+            .unwrap(),
+    );
+    stdout(
+        &command(&db)
+            .args(["backup", "--output"])
+            .arg(&backup)
+            .arg("--manifest")
+            .arg(&manifest)
+            .output()
+            .unwrap(),
+    );
+    let destination = dir.path().join("restore");
+    let restore = || {
+        command(&destination)
+            .args(["restore", "--backup"])
+            .arg(&backup)
+            .arg("--manifest")
+            .arg(&manifest)
+            .arg("--expected-state")
+            .arg(&checkpoint)
+            .output()
+            .unwrap()
+    };
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+    // Even agreeing external records cannot relabel the actual snapshot state.
+    let original = value.clone();
+    for field in [
+        "store_schema",
+        "network",
+        "height_one_hash",
+        "anchor_height",
+        "anchor_hash",
+        "capacity",
+        "retained_first",
+        "tip_height",
+        "tip_hash",
+        "protected_height",
+        "protected_hash",
+        "guardian_id",
+    ] {
+        let mut changed = original.clone();
+        changed["state"][field] = "wrong".into();
+        std::fs::write(&manifest, serde_json::to_vec(&changed).unwrap()).unwrap();
+        std::fs::write(&checkpoint, serde_json::to_vec(&changed["state"]).unwrap()).unwrap();
+        assert!(!restore().status.success(), "{field}");
+        assert!(!destination.exists(), "{field}");
+    }
+    std::fs::write(&checkpoint, serde_json::to_vec(&original["state"]).unwrap()).unwrap();
+    value["sha256"] = "00".repeat(32).into();
+    std::fs::write(&manifest, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert!(!restore().status.success());
+    assert!(!destination.exists());
+    // A publication collision never replaces existing material.
+    assert!(
+        !command(&db)
+            .args(["backup", "--output"])
+            .arg(&backup)
+            .arg("--manifest")
+            .arg(dir.path().join("other"))
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(!dir.path().join("other").exists());
+    // Simulate a manifest-publication collision after successful DB publication:
+    // different spellings of one nonexistent destination pass the early check.
+    let interrupted = dir.path().join("interrupted");
+    std::fs::create_dir(dir.path().join("child")).unwrap();
+    let alias = dir.path().join("child").join("..").join("interrupted");
+    let result = command(&db)
+        .args(["backup", "--output"])
+        .arg(&interrupted)
+        .arg("--manifest")
+        .arg(&alias)
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(interrupted.exists()); // Complete data remains for inspection.
+    assert!(serde_json::from_slice::<serde_json::Value>(&std::fs::read(&alias).unwrap()).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn bound_service_signal_and_kill_preserve_binding_and_exclude_online_backup() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("chain");
+    let headers = create(&db);
+    let hash = headers[0].block_hash().to_string();
+    let id = "31".repeat(32);
+    stdout(
+        &command(&db)
+            .args([
+                "--guardian-id",
+                &id,
+                "bind-guardian",
+                "--committed-height",
+                "0",
+                "--committed-hash",
+                &hash,
+                "--oldest-needed",
+                "1",
+            ])
+            .output()
+            .unwrap(),
+    );
+    let credentials = dir.path().join("rpc.auth");
+    std::fs::write(&credentials, "test:private\n").unwrap();
+    std::fs::set_permissions(&credentials, std::fs::Permissions::from_mode(0o600)).unwrap();
+    for signal in ["TERM", "KILL"] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let child = Child::start(
+            command(&db)
+                .args([
+                    "--guardian-id",
+                    &id,
+                    "serve",
+                    "--committed-height",
+                    "0",
+                    "--committed-hash",
+                    &hash,
+                    "--oldest-needed",
+                    "1",
+                    "--manual-only",
+                    "--peer",
+                    &listener.local_addr().unwrap().to_string(),
+                    "--rpc-bind",
+                    "127.0.0.1:0",
+                    "--rpc-credentials",
+                ])
+                .arg(&credentials),
+        );
+        let mut stream = accept(&listener);
+        read(&mut stream);
+        let backup = dir.path().join("online-backup");
+        let result = command(&db)
+            .args(["--guardian-id", &id, "backup", "--output"])
+            .arg(&backup)
+            .arg("--manifest")
+            .arg(dir.path().join("manifest"))
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(!backup.exists());
+        let pid = child.process.as_ref().unwrap().id().to_string();
+        assert!(
+            Command::new("sh")
+                .args(["-c", "kill -\"$1\" \"$2\"", "sh", signal, &pid])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let result = child.finish();
+        assert_eq!(result.status.success(), signal == "TERM");
+        let status = stdout(&command(&db).arg("status").output().unwrap());
+        assert!(status.contains(&format!("guardian_id={id}")));
+        assert!(status.contains("protected_height=0"));
+    }
+    // Bound state cannot be accidentally exposed as an unbound smoke service.
+    let result = command(&db)
+        .args(["serve", "--standalone", "--rpc-credentials"])
+        .arg(credentials)
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+}
+
+#[test]
 fn help_and_argument_errors_are_offline() {
     let help = Command::new(env!("CARGO_BIN_EXE_fedimint-light-node"))
         .arg("--help")
@@ -190,7 +486,7 @@ fn status_and_protection_preserve_pinned_identity_and_honest_count() {
     let reopened = stdout(&command(&db).arg("status").output().unwrap());
     assert!(reopened.contains("protected_height=2"));
     assert!(
-        !command(&db)
+        command(&db)
             .args([
                 "protect",
                 "--height",

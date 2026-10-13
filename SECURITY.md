@@ -66,8 +66,9 @@ can keep that work off latency-sensitive threads.
 
 The optional CLI owns a current-thread Tokio runtime and SIGINT/SIGTERM handling;
 none is installed by the library. Signal cancellation cannot interrupt synchronous
-database work, block serialization or publication, and default runtime teardown
-can wait for HTTPS resolver jobs. This is not a hard shutdown-time guarantee.
+database work, block serialization or publication. Executable runtime teardown
+waits at most two seconds for resolver jobs; they can still outlive cancellation.
+This is not a hard shutdown-time guarantee for synchronous work or the library.
 
 The explicit `serve` command adds a loopback-only Basic-authenticated RPC endpoint.
 Basic authentication is not encryption; local users can still connect or deny service.
@@ -87,6 +88,21 @@ submission-only transaction semantics without Core's implicit fee/burn safeguard
 No standard RPC read advances durable protection; an external guardian commit
 cannot be inferred from a block/hash read. This transport is not a production
 guardian-finality integration.
+
+Guardian binding is an irreversible local operator assertion, not authentication
+of a remote guardian database. Bound startup checks independently supplied current
+commitment and needed range. Only explicit hash-checked administration advances
+protection; verified older ancestry never lowers it. A manual checkpoint does not
+coordinate later commits. Operational metadata rejects unknown versions; older
+binaries reject the extra record. Never bypass this with a downgrade or record edit.
+
+Stopped-store backup holds exclusive ownership while exporting logical records.
+Restore checks integrity and exact independently current state in private staging,
+then publishes without overwrite. Digests prove neither authenticity nor recency;
+trust the directory and retain the latest guardian/protection records separately.
+An old matching manifest is not safe restore authority. Credentials and guardian
+state are not included. See the [operator runbook](docs/operations.md) for failure
+boundaries, interrupted publication and explicit recovery limitations.
 
 Block-file export uses private sibling staging and atomic no-overwrite publication.
 Existing entries, including aliases of the database, are refused. As with database

@@ -246,7 +246,9 @@ pruning; `block_hash(height)` only resolves retained selected heights.
 `sync_progress()` returns `None`, not a guessed percentage or a freshness claim.
 Neither count nor fetch implicitly protects the tip. Protection starts at the
 trusted anchor and is durable and monotonic; for older already-protected ancestry,
-inspect the existing floor instead of attempting to lower it.
+`protect_through` verifies the retained hash and returns success without lowering
+the floor. A pruned hash must match the exact persisted protected checkpoint.
+See [guardian operations](operations.md) for binding, preflight and safe recovery.
 
 The example's optional submission shares the same exclusive owner and finite
 budgets as the CLI. Completed writes do not prove receipt, acceptance, propagation
@@ -413,8 +415,8 @@ selected chain. Candidate batches and checkpoints are bounded by header capacity
 There is no orphan pool, persistent fork cache or archival recovery.
 
 Call `protect_through(height, hash)` before promising a selected header as finalized
-to a consumer, unless it is already at or below `protected_height()` (as initial
-trusted history is). Trying to lower that floor returns an error.
+to a consumer. Already-protected ancestry is an idempotent success only when its
+hash can be verified; the floor never decreases.
 The monotonic protection floor survives pruning and restart; it is
 not inferred from confirmation counts. Forks crossing that floor, the anchor, or
 available context return `RecoveryRequired` without altering state. An unsupported

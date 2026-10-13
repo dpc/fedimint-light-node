@@ -10,6 +10,7 @@ use crate::retained_range::RetainedRange;
 use crate::store_anchor::StoreAnchor;
 use crate::store_config::StoreConfig;
 use crate::store_error::StoreError;
+use crate::store_format::OperationalMetadata;
 use crate::store_format::{CONTEXTS, HEADERS, META, Metadata, decode_header, encode_header};
 
 /// Synchronous, bounded canonical-header persistence for an embedding caller.
@@ -332,6 +333,82 @@ impl HeaderStore {
         Ok(read_metadata(&read.open_table(META)?)?.protected)
     }
 
+    pub(crate) fn guardian_id(&self) -> Result<Option<[u8; 32]>, StoreError> {
+        let read = self.database.begin_read()?;
+        Ok(read_operational(&read.open_table(META)?)?.and_then(|record| record.guardian))
+    }
+
+    pub(crate) fn protected_checkpoint(&self) -> Result<(u64, bitcoin::BlockHash), StoreError> {
+        let height = self.protected()?;
+        let read = self.database.begin_read()?;
+        if let Some(record) = read_operational(&read.open_table(META)?)? {
+            return Ok((
+                height,
+                bitcoin::BlockHash::from_byte_array(record.protected_hash),
+            ));
+        }
+        let hash = if height == self.anchor.height {
+            self.anchor.hash
+        } else {
+            self.header(height)?.block_hash()
+        };
+        Ok((height, hash))
+    }
+
+    pub(crate) fn bind_guardian(&mut self, guardian: [u8; 32]) -> Result<(), StoreError> {
+        if self
+            .guardian_id()?
+            .is_some_and(|current| current != guardian)
+        {
+            return Err(StoreError::GuardianMismatch);
+        }
+        let (_, hash) = self.protected_checkpoint()?;
+        let mut write = self.database.begin_write()?;
+        write.set_durability(redb::Durability::Immediate)?;
+        write.open_table(META)?.insert(
+            1,
+            OperationalMetadata::new(Some(guardian), hash.to_byte_array())
+                .encode()
+                .as_slice(),
+        )?;
+        write.commit()?;
+        Ok(())
+    }
+
+    /// Copy a quiescent, exclusively owned store by logical records, not file bytes.
+    pub(crate) fn snapshot(&self, path: &Path) -> Result<(), StoreError> {
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(path)?;
+        let destination = Database::builder()
+            .set_cache_size(self.config.cache_bytes.get())
+            .create_file(file)?;
+        let read = self.database.begin_read()?;
+        let mut write = destination.begin_write()?;
+        write.set_durability(redb::Durability::Immediate)?;
+        {
+            let mut target = write.open_table(META)?;
+            for row in read.open_table(META)?.iter()? {
+                let (key, value) = row?;
+                target.insert(key.value(), value.value())?;
+            }
+        }
+        for definition in [HEADERS, CONTEXTS] {
+            let mut target = write.open_table(definition)?;
+            for row in read.open_table(definition)?.iter()? {
+                let (key, value) = row?;
+                target.insert(key.value(), value.value())?;
+            }
+        }
+        write.commit()?;
+        Ok(())
+    }
+
     pub(crate) fn protect(
         &mut self,
         height: u64,
@@ -342,17 +419,41 @@ impl HeaderStore {
         {
             let mut table = write.open_table(META)?;
             let mut metadata = read_metadata(&table)?;
-            if !self.validated || height < metadata.protected || height > metadata.tip {
+            if !self.validated || height > metadata.tip {
                 return Err(StoreError::InvalidUpdate("invalid protection height"));
             }
-            if height < metadata.first {
+            let operational = read_operational(&table)?;
+            let expected = if height >= metadata.first {
+                read_header(&write.open_table(HEADERS)?, height)?.block_hash()
+            } else if height == metadata.protected {
+                if let Some(record) = &operational {
+                    bitcoin::BlockHash::from_byte_array(record.protected_hash)
+                } else if height == self.anchor.height {
+                    self.anchor.hash
+                } else {
+                    return Err(StoreError::OutsideRetainedHistory);
+                }
+            } else {
                 return Err(StoreError::OutsideRetainedHistory);
-            }
-            if read_header(&write.open_table(HEADERS)?, height)?.block_hash() != hash {
+            };
+            if expected != hash {
                 return Err(StoreError::InvalidUpdate("protection hash mismatch"));
+            }
+            // A verified older ancestor is already protected; never lower the floor.
+            if height < metadata.protected {
+                return Ok(());
             }
             metadata.protected = height;
             table.insert(0, metadata.encode().as_slice())?;
+            table.insert(
+                1,
+                OperationalMetadata::new(
+                    operational.and_then(|record| record.guardian),
+                    hash.to_byte_array(),
+                )
+                .encode()
+                .as_slice(),
+            )?;
         }
         write.commit()?;
         Ok(())
@@ -362,7 +463,8 @@ impl HeaderStore {
         let read = self.database.begin_read()?;
         // A format bump must precede interpreting any future table layouts.
         let metadata_table = read.open_table(META)?;
-        if metadata_table.len()? != 1 {
+        let operational = read_operational(&metadata_table)?;
+        if metadata_table.len()? != 1 + u64::from(operational.is_some()) {
             return Err(StoreError::Corrupt("unexpected metadata records"));
         }
         let metadata = read_metadata(&metadata_table)?;
@@ -378,6 +480,19 @@ impl HeaderStore {
         }
         if metadata.protected < self.anchor.height || metadata.protected > metadata.tip {
             return Err(StoreError::Corrupt("invalid protected height"));
+        }
+        if let Some(record) = operational {
+            if !self.validated {
+                return Err(StoreError::Corrupt("operational metadata on raw store"));
+            }
+            let hash = bitcoin::BlockHash::from_byte_array(record.protected_hash);
+            if (metadata.protected == self.anchor.height && hash != self.anchor.hash)
+                || (metadata.protected >= metadata.first
+                    && read_header(&read.open_table(HEADERS)?, metadata.protected)?.block_hash()
+                        != hash)
+            {
+                return Err(StoreError::Corrupt("protected hash mismatch"));
+            }
         }
         if (!self.validated && metadata.first < metadata.anchor_height)
             || metadata.tip < metadata.first
@@ -458,6 +573,15 @@ fn read_metadata(table: &impl ReadableTable<u8, &'static [u8]>) -> Result<Metada
         .get(0)?
         .ok_or(StoreError::Corrupt("missing metadata"))?;
     Metadata::decode(bytes.value())
+}
+
+fn read_operational(
+    table: &impl ReadableTable<u8, &'static [u8]>,
+) -> Result<Option<OperationalMetadata>, StoreError> {
+    table
+        .get(1)?
+        .map(|bytes| OperationalMetadata::decode(bytes.value()))
+        .transpose()
 }
 
 fn read_header(

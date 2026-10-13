@@ -5,7 +5,8 @@ It is not Bitcoin Core, a full validator, or a production guardian-finality
 integration. The compatibility target is Fedimint
 `502b7ec7da37d231b21d5bce993e9b9a9e7b63a6`, using `bitcoincore-rpc` 0.19.0 and
 `jsonrpc` 0.18.0. Integration tests exercise those actual pinned clients.
-No reference Fedimint source is modified.
+No reference Fedimint source is modified. See the [operator runbook](operations.md)
+for explicit guardian binding, startup preflight, stopped-store backup and recovery.
 
 ## Mainnet walkthrough
 
@@ -38,7 +39,7 @@ unset PASSWORD
 # Terminal A; leave running. Credentials stay out of process arguments.
 "$NODE" --db "$DEMO/chain.redb" --capacity 144 \
   --fixed-fee-sats-per-kvb 1000 serve \
-  --rpc-credentials "$DEMO/rpc.auth" --fake-bitcoind
+  --rpc-credentials "$DEMO/rpc.auth" --fake-bitcoind --standalone
 ```
 
 Startup prints selected state, the loopback address, and the complete synthetic

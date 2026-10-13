@@ -1,6 +1,12 @@
 /// Errors from the storage boundary, not Bitcoin consensus rejection reasons.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
+    /// The independently supplied guardian identity does not match this store.
+    #[error("guardian binding mismatch; stop and reconcile operator records")]
+    GuardianMismatch,
+    /// Guardian commitment is not covered by a hash-verified local protection floor.
+    #[error("guardian commitment is not proven protected; explicit coordination required")]
+    UnprotectedCommitment,
     /// The requested height is older than this store's available history.
     #[error("height is outside retained history")]
     OutsideRetainedHistory,

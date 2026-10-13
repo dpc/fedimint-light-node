@@ -382,6 +382,7 @@ async fn range_and_selection_errors_never_connect_or_attempt_archival_recovery()
             .await,
         Err(BlockDownloadError::NotCanonical)
     ));
+    assert!(!service.status().unwrap().stopped);
     assert!(
         timeout(Duration::from_millis(30), listener.accept())
             .await

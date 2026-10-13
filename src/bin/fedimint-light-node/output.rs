@@ -82,6 +82,26 @@ pub fn status(store: &ValidatedHeaderStore) -> Result<()> {
     writeln!(out, "retained_headers={}", tip - first + 1)?;
     writeln!(out, "capacity={}", store.capacity())?;
     writeln!(out, "protected_height={}", store.protected_height()?)?;
+    match store.protected_checkpoint() {
+        Ok((_, hash)) => writeln!(out, "protected_hash={hash}")?,
+        Err(fedimint_light_node::store_error::StoreError::OutsideRetainedHistory) => {
+            writeln!(out, "protected_hash=legacy-pruned-unavailable")?;
+        }
+        Err(error) => return Err(error.into()),
+    }
+    use bitcoin::hashes::Hash;
+    writeln!(
+        out,
+        "guardian_id={}",
+        store
+            .guardian_id()?
+            .map(|id| bitcoin::hashes::sha256::Hash::from_byte_array(id).to_string())
+            .unwrap_or_else(|| "unbound".into())
+    )?;
+    writeln!(
+        out,
+        "local_state=open-verified guardian_readiness=requires-current-preflight"
+    )?;
     writeln!(out, "freshness=unproven")?;
     writeln!(out, "sync_progress=unavailable")?;
     writeln!(out, "body_availability=unproven")?;

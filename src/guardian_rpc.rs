@@ -131,6 +131,13 @@ impl GuardianRpc {
         };
         let owner = async {
             let mut next_sync = Instant::now();
+            let mut completed = 0_u64;
+            let mut canceled = 0_u64;
+            let mut last_code = 0_i32;
+            let mut last_rpc_unix = None;
+            let mut last_visit_ok_unix = None;
+            let mut last_selection_unix = None;
+            let mut generation = self.sync.status().map_err(io::Error::other)?.generation;
             loop {
                 // Check the clock before dequeuing: a full queue cannot starve sync.
                 if Instant::now() >= next_sync {
@@ -139,10 +146,24 @@ impl GuardianRpc {
                         .map_err(io::Error::other)?
                         .as_secs();
                     let report = timeout(Duration::from_secs(4), self.sync.step(now)).await;
+                    if report.as_ref().is_ok_and(|report| report.result.is_ok()) {
+                        last_visit_ok_unix = Some(now);
+                    }
+                    let status = self.sync.status().map_err(io::Error::other)?;
+                    if status.generation != generation {
+                        last_selection_unix = Some(now);
+                        generation = status.generation;
+                    }
                     let diagnostic = match report {
                         Ok(report) => format!("{:?}", report.result),
                         Err(_) => "visit deadline (progress, if committed, is retained)".into(),
                     };
+                    let diagnostic = format!(
+                        "observed_unix={now} stopped={} cheap_queued={} network_queued={} rpc_completed={completed} rpc_canceled={canceled} last_rpc_code={last_code} last_rpc_unix={last_rpc_unix:?} last_visit_ok_unix={last_visit_ok_unix:?} last_selection_unix={last_selection_unix:?} visit={diagnostic}",
+                        status.stopped,
+                        receive.len(),
+                        slow_receive.len()
+                    );
                     on_sync(&self.sync, &diagnostic);
                     if self.sync.status().map_err(io::Error::other)?.stopped {
                         return Err(io::Error::other("sync stopped; explicit recovery required"));
@@ -159,15 +180,25 @@ impl GuardianRpc {
                     return Ok(());
                 };
                 if pending.reply.is_closed() {
+                    canceled = canceled.saturating_add(1);
                     continue;
                 }
                 let result = tokio::select! {
                     biased;
-                    _ = pending.reply.closed() => continue,
+                    _ = pending.reply.closed() => {
+                        canceled = canceled.saturating_add(1);
+                        continue;
+                    },
                     result = timeout(Duration::from_secs(6),
                         dispatch(&mut self.sync, &pending.request, self.fake, self.submission)) =>
                         result.unwrap_or_else(|_| Err(RpcError::unavailable())),
                 };
+                completed = completed.saturating_add(1);
+                last_code = result.as_ref().err().map_or(0, |error| error.code);
+                last_rpc_unix = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .ok()
+                    .map(|time| time.as_secs());
                 let fatal = result.as_ref().is_err_and(|e| e.fatal);
                 let _ = pending.reply.send(result);
                 if fatal {

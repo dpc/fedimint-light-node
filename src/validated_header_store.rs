@@ -4,6 +4,7 @@ use std::path::Path;
 use bitcoin::block::Header;
 use bitcoin::{BlockHash, Network};
 
+use crate::guardian_binding::GuardianPreflight;
 use crate::header_context::HeaderContext;
 use crate::header_error::HeaderError;
 use crate::header_store::HeaderStore;
@@ -181,13 +182,84 @@ impl ValidatedHeaderStore {
         self.store.protected()
     }
 
+    /// Return the immutable operator guardian identity, absent for standalone state.
+    pub fn guardian_id(&self) -> Result<Option<[u8; 32]>, StoreError> {
+        self.store.guardian_id()
+    }
+
+    /// Return the protected height/hash even after pruning, for operational stores.
+    ///
+    /// Legacy stores without an operational record can only recover a pruned hash
+    /// when the protected height is the pinned anchor. Never guess other old hashes.
+    pub fn protected_checkpoint(&self) -> Result<(u64, BlockHash), StoreError> {
+        self.store.protected_checkpoint()
+    }
+
+    /// Export a quiescent logical snapshot into a NEW private staging file.
+    ///
+    /// Exclusive ownership and redb's process lock must remain held throughout.
+    /// This is not a hot backup API: stop service and consumer first. The caller
+    /// must reopen, verify, sync and publish staging without overwriting state.
+    pub fn snapshot(&self, path: impl AsRef<Path>) -> Result<(), StoreError> {
+        self.store.snapshot(path.as_ref())
+    }
+
+    /// Irreversibly bind this store to one independently identified guardian database.
+    ///
+    /// Requires already protected, hash-proven commitment and retained needed history.
+    /// This does not make subsequent guardian commits automatic or safe by itself.
+    pub fn bind_guardian(&mut self, expected: GuardianPreflight) -> Result<(), StoreError> {
+        if self
+            .guardian_id()?
+            .is_some_and(|id| id != expected.guardian_id)
+        {
+            return Err(StoreError::GuardianMismatch);
+        }
+        self.check_guardian_history(expected)?;
+        self.store.bind_guardian(expected.guardian_id)
+    }
+
+    /// Fail startup before exposing service if identity, commitment or range differs.
+    pub fn preflight_guardian(&self, expected: GuardianPreflight) -> Result<(), StoreError> {
+        if self.guardian_id()? != Some(expected.guardian_id) {
+            return Err(StoreError::GuardianMismatch);
+        }
+        self.check_guardian_history(expected)
+    }
+
+    fn check_guardian_history(&self, expected: GuardianPreflight) -> Result<(), StoreError> {
+        let (first, tip) = self.bounds()?;
+        if expected.oldest_needed < first {
+            return Err(StoreError::OutsideRetainedHistory);
+        }
+        if expected.oldest_needed > tip.saturating_add(1) || expected.committed_height > tip {
+            return Err(StoreError::BeyondTip);
+        }
+        if expected.committed_height > self.protected_height()? {
+            return Err(StoreError::UnprotectedCommitment);
+        }
+        let hash = if expected.committed_height >= first {
+            self.header(expected.committed_height)?.block_hash()
+        } else {
+            let (height, hash) = self.protected_checkpoint()?;
+            if expected.committed_height != height {
+                return Err(StoreError::OutsideRetainedHistory);
+            }
+            hash
+        };
+        if expected.committed_hash != hash {
+            return Err(StoreError::UnprotectedCommitment);
+        }
+        Ok(())
+    }
+
     /// Persist a monotonic protection floor for a currently retained canonical hash.
     ///
     /// Call before promising that height as finalized to a consumer. Lowering the
     /// floor, replacing protected history, and automatic re-anchoring are forbidden.
     /// Header pruning does not remove this protection.
-    /// Retained heights already at or below `protected_height()` need no update;
-    /// attempting to lower the floor returns an error, even for trusted ancestry.
+    /// Hash-verified retained ancestors are idempotent successes without reducing
+    /// the floor. A pruned hash can only match the exact recorded protected checkpoint.
     pub fn protect_through(&mut self, height: u64, hash: BlockHash) -> Result<(), StoreError> {
         self.store.protect(height, hash)
     }

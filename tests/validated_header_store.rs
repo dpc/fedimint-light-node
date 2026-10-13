@@ -148,7 +148,8 @@ fn finality_floor_survives_restart_and_pruning_and_cannot_regress() {
     assert!(store.protect_through(2, headers[3].block_hash()).is_err());
     assert_eq!(store.protected_height().unwrap(), 0);
     store.protect_through(2, headers[2].block_hash()).unwrap();
-    assert!(store.protect_through(1, headers[1].block_hash()).is_err());
+    store.protect_through(1, headers[1].block_hash()).unwrap();
+    assert_eq!(store.protected_height().unwrap(), 2);
     drop(store);
     let mut store = ValidatedHeaderStore::open(&path, config(4), anchor).unwrap();
     assert_eq!(store.protected_height().unwrap(), 2);
@@ -158,13 +159,142 @@ fn finality_floor_survives_restart_and_pruning_and_cannot_regress() {
     ));
     store.select_suffix(2, &headers[3..=6], u64::MAX).unwrap();
     assert_eq!(store.bounds().unwrap(), (3, 6));
-    assert!(matches!(
-        store.protect_through(2, headers[2].block_hash()),
-        Err(StoreError::OutsideRetainedHistory)
-    ));
+    store.protect_through(2, headers[2].block_hash()).unwrap();
+    assert!(store.protect_through(2, headers[3].block_hash()).is_err());
     drop(store);
     let store = ValidatedHeaderStore::open(&path, config(4), anchor).unwrap();
     assert_eq!(store.protected_height().unwrap(), 2);
+}
+
+#[test]
+fn binding_requires_proven_commitment_and_current_range_and_survives_pruning() {
+    use fedimint_light_node::guardian_binding::GuardianPreflight;
+    let headers = headers();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chain");
+    let anchor = anchor(&headers, 0);
+    let mut store = ValidatedHeaderStore::create(&path, config(4), anchor, &headers[..1]).unwrap();
+    store.select_suffix(0, &headers[1..=3], u64::MAX).unwrap();
+    let mut expected = GuardianPreflight {
+        guardian_id: [42; 32],
+        committed_height: 2,
+        committed_hash: headers[2].block_hash(),
+        oldest_needed: 3,
+    };
+    assert!(matches!(
+        store.bind_guardian(expected),
+        Err(StoreError::UnprotectedCommitment)
+    ));
+    assert_eq!(store.guardian_id().unwrap(), None);
+    store.protect_through(2, headers[2].block_hash()).unwrap();
+    store.bind_guardian(expected).unwrap();
+    store.bind_guardian(expected).unwrap();
+    store.preflight_guardian(expected).unwrap();
+    expected.guardian_id = [43; 32];
+    assert!(matches!(
+        store.bind_guardian(expected),
+        Err(StoreError::GuardianMismatch)
+    ));
+    assert!(matches!(
+        store.preflight_guardian(expected),
+        Err(StoreError::GuardianMismatch)
+    ));
+    expected.guardian_id = [42; 32];
+    expected.committed_hash = headers[3].block_hash();
+    assert!(matches!(
+        store.preflight_guardian(expected),
+        Err(StoreError::UnprotectedCommitment)
+    ));
+    expected.committed_hash = headers[2].block_hash();
+    store.select_suffix(3, &headers[4..=6], u64::MAX).unwrap();
+    drop(store);
+    let store = ValidatedHeaderStore::open_pinned(&path, config(4)).unwrap();
+    store.preflight_guardian(expected).unwrap(); // Exact persisted pruned checkpoint.
+    assert_eq!(
+        store.protected_checkpoint().unwrap(),
+        (2, headers[2].block_hash())
+    );
+    expected.oldest_needed = 2;
+    assert!(matches!(
+        store.preflight_guardian(expected),
+        Err(StoreError::OutsideRetainedHistory)
+    ));
+    expected.oldest_needed = 8;
+    assert!(matches!(
+        store.preflight_guardian(expected),
+        Err(StoreError::BeyondTip)
+    ));
+    expected.oldest_needed = 7; // Caught up next-needed tip+1 is valid.
+    store.preflight_guardian(expected).unwrap();
+    expected.committed_height = 1;
+    expected.committed_hash = headers[1].block_hash();
+    assert!(matches!(
+        store.preflight_guardian(expected),
+        Err(StoreError::OutsideRetainedHistory)
+    ));
+}
+
+#[test]
+fn binding_accepts_overprotection_but_never_invents_a_legacy_pruned_hash() {
+    use fedimint_light_node::guardian_binding::GuardianPreflight;
+    let headers = headers();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chain");
+    let anchor = anchor(&headers, 0);
+    let mut store = ValidatedHeaderStore::create(&path, config(4), anchor, &headers[..1]).unwrap();
+    store.select_suffix(0, &headers[1..=3], u64::MAX).unwrap();
+    store.protect_through(2, headers[2].block_hash()).unwrap();
+    let expected = GuardianPreflight {
+        guardian_id: [3; 32],
+        committed_height: 1,
+        committed_hash: headers[1].block_hash(),
+        oldest_needed: 2,
+    };
+    store.bind_guardian(expected).unwrap();
+    store.preflight_guardian(expected).unwrap();
+    store.select_suffix(3, &headers[4..=6], u64::MAX).unwrap();
+    drop(store);
+    // Model a legacy store whose non-anchor floor was pruned before this extension.
+    let db = Database::open(&path).unwrap();
+    let tx = db.begin_write().unwrap();
+    tx.open_table(META).unwrap().remove(1).unwrap();
+    tx.commit().unwrap();
+    drop(db);
+    let store = ValidatedHeaderStore::open_pinned(&path, config(4)).unwrap();
+    assert!(matches!(
+        store.protected_checkpoint(),
+        Err(StoreError::OutsideRetainedHistory)
+    ));
+}
+
+#[test]
+fn unsupported_or_corrupt_operational_records_fail_open_without_reinitialization() {
+    let headers = headers();
+    let dir = tempfile::tempdir().unwrap();
+    for mutation in 0..3 {
+        let path = dir.path().join(format!("chain-{mutation}"));
+        let mut store =
+            ValidatedHeaderStore::create(&path, config(4), anchor(&headers, 0), &headers[..1])
+                .unwrap();
+        store.protect_through(0, headers[0].block_hash()).unwrap();
+        drop(store);
+        let db = Database::open(&path).unwrap();
+        let tx = db.begin_write().unwrap();
+        {
+            let mut table = tx.open_table(META).unwrap();
+            let mut bytes = table.get(1).unwrap().unwrap().value().to_vec();
+            match mutation {
+                0 => bytes[..4].copy_from_slice(&2_u32.to_le_bytes()),
+                1 => *bytes.last_mut().unwrap() ^= 1,
+                _ => bytes.push(0),
+            }
+            table.insert(1, bytes.as_slice()).unwrap();
+        }
+        tx.commit().unwrap();
+        drop(db);
+        assert!(ValidatedHeaderStore::open_pinned(&path, config(4)).is_err());
+        assert!(path.exists());
+    }
 }
 
 #[test]

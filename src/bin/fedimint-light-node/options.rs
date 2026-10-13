@@ -27,6 +27,9 @@ pub struct Options {
     /// Static policy only, never a network estimate; not persisted in the database.
     #[arg(long, global = true)]
     pub fixed_fee_sats_per_kvb: Option<NonZeroU64>,
+    /// Independently recorded 32-byte guardian database identity in hex (not a secret).
+    #[arg(long, global = true)]
+    pub guardian_id: Option<bitcoin::hashes::sha256::Hash>,
     /// Requested operation.
     #[command(subcommand)]
     pub command: Command,
@@ -71,6 +74,38 @@ pub enum Command {
     },
     /// Report pinned and selected state offline, not node health.
     Status,
+    /// Write an offline safety-state record to NEW output; keep independently of backups.
+    Checkpoint {
+        /// New JSON file in a trusted directory.
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Bind permanently to a guardian after verifying its independently recorded state.
+    BindGuardian {
+        #[command(flatten)]
+        guardian: GuardianState,
+    },
+    /// Logical stopped-store snapshot plus a hash-checked manifest; no hot file copies.
+    Backup {
+        /// New database snapshot file.
+        #[arg(long)]
+        output: PathBuf,
+        /// New JSON manifest, published last.
+        #[arg(long)]
+        manifest: PathBuf,
+    },
+    /// Restore only matching independently retained CURRENT safety state into a NEW db.
+    Restore {
+        /// Stopped snapshot database, never modified in place.
+        #[arg(long)]
+        backup: PathBuf,
+        /// Snapshot integrity and identity manifest.
+        #[arg(long)]
+        manifest: PathBuf,
+        /// Independent current checkpoint, NOT a copy derived from this backup.
+        #[arg(long)]
+        expected_state: PathBuf,
+    },
     /// Sync while serving a bounded authenticated guardian-only RPC on loopback.
     Serve {
         #[command(flatten)]
@@ -87,6 +122,12 @@ pub enum Command {
         /// Enable submission-only sendrawtransaction WITHOUT Core fee/burn safeguards.
         #[arg(long)]
         allow_rpc_submission: bool,
+        /// Explicit unbound smoke/demo mode; never a guardian-finality integration.
+        #[arg(long)]
+        standalone: bool,
+        /// Bound guardian startup evidence, required unless --standalone.
+        #[command(flatten)]
+        guardian: GuardianState,
     },
     /// Visit configured peers repeatedly until interrupted; --once visits one peer.
     Sync {
@@ -148,6 +189,45 @@ pub enum Command {
         #[arg(long)]
         hash: BlockHash,
     },
+}
+
+/// Explicit guardian watermark; not a claim inferred from network or RPC activity.
+#[derive(Debug, Args)]
+pub struct GuardianState {
+    /// Last irreversibly consumed block HEIGHT (not Fedimint block count).
+    #[arg(long)]
+    pub committed_height: Option<u64>,
+    /// Independently recorded hash at committed-height.
+    #[arg(long)]
+    pub committed_hash: Option<BlockHash>,
+    /// Oldest block the guardian still needs; tip+1 is allowed when caught up.
+    #[arg(long)]
+    pub oldest_needed: Option<u64>,
+}
+
+impl GuardianState {
+    /// Reject partial or absent state rather than manufacturing a consumer watermark.
+    pub fn preflight(
+        &self,
+        id: Option<bitcoin::hashes::sha256::Hash>,
+    ) -> crate::Result<fedimint_light_node::guardian_binding::GuardianPreflight> {
+        use bitcoin::hashes::Hash;
+        Ok(fedimint_light_node::guardian_binding::GuardianPreflight {
+            guardian_id: id.ok_or("--guardian-id is required")?.to_byte_array(),
+            committed_height: self
+                .committed_height
+                .ok_or("--committed-height is required")?,
+            committed_hash: self.committed_hash.ok_or("--committed-hash is required")?,
+            oldest_needed: self.oldest_needed.ok_or("--oldest-needed is required")?,
+        })
+    }
+
+    /// Determine whether any caller watermark was supplied.
+    pub fn is_present(&self) -> bool {
+        self.committed_height.is_some()
+            || self.committed_hash.is_some()
+            || self.oldest_needed.is_some()
+    }
 }
 
 /// Public discovery by default, supplemented or replaced by explicit numeric peers.

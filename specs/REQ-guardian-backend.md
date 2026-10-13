@@ -15,6 +15,10 @@ body retrieval do not protect history. Fee policy defaults to unavailable or is 
 explicit positive operator-supplied static rate in satoshis per 1,000 virtual bytes,
 not a network estimate. The embedding example demonstrates these operations;
 consumer database finality coordination and end-to-end guardian deployment remain absent.
+Explicit local guardian binding, hash-checked administrative protection and startup
+ancestry/range preflight now support manual operator checkpoints. Stopped-store
+snapshots and conservative restore require independently current safety records;
+they cannot establish guardian database recency or coordinate future commits.
 
 ## Authority and scope
 

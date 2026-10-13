@@ -24,6 +24,7 @@ pub mod declared_pow;
 pub mod decode_error;
 pub mod fee_policy;
 pub mod frame_error;
+pub mod guardian_binding;
 pub mod guardian_rpc;
 pub mod guardian_rpc_config;
 pub mod header_context;

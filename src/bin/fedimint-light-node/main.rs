@@ -5,6 +5,7 @@ mod options;
 mod output;
 #[cfg(test)]
 mod output_tests;
+mod recovery;
 mod rpc_credentials;
 mod transaction_input;
 
@@ -41,13 +42,17 @@ fn run(options: Options) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(async {
+    let result = runtime.block_on(async {
         // Register before starting work. Direct P2P futures are dropped on shutdown;
         // synchronous DB work and HTTP OS resolver jobs cannot be forcibly stopped.
         let shutdown = shutdown()?;
         tokio::pin!(shutdown);
         operations::run(options, shutdown).await
-    })
+    });
+    // Stop waiting for non-cancelable OS resolver jobs after bounded teardown.
+    // Such jobs can outlive the runtime; the executable exits, the library does not.
+    runtime.shutdown_timeout(std::time::Duration::from_secs(2));
+    result
 }
 
 #[cfg(unix)]
