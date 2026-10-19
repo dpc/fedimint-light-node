@@ -12,8 +12,26 @@ local time, resource configuration and database paths. Different host names do
 not establish independent ownership. HTTPS certificate validation authenticates
 an endpoint, not the truth of its reported height or Bitcoin chain. Source
 agreement and timestamp checks cannot exclude collusion, shared failures,
-eclipse attacks or consensus-invalid chains. Only initial bootstrap uses those
-sources; reopening must use the pinned local checkpoint.
+eclipse attacks or consensus-invalid chains. Only initial bootstrap grants those
+sources checkpoint authority; reopening must use the pinned local checkpoint.
+Optional ongoing Esplora retrieval treats every response as adversarial header
+evidence at the same admission boundary as P2P, not as a fresh checkpoint.
+
+## Independent header transports
+
+Periodic HTTPS header candidates add defense in depth against P2P Sybil
+withholding. No explorer quorum, reputation, reported height or claimed work
+authorizes selection. Any one source can supply a supported higher-work suffix,
+but local contextual validation, relative work, retention, protection and atomic
+publication still decide. This is not full consensus validation or proof of
+freshness, source independence, eclipse resistance or block-body availability.
+
+This is deliberately a shallow ongoing defense: at most 256 unknown headers per
+source, further limited by storage and candidate configuration. Deeper gaps or
+unsupported forks remain degraded; no automatic recovery or re-anchoring occurs.
+Source failures do not stop other transports; actual local store failures do.
+The [operation guide](docs/guide.md#periodic-explorer-header-candidates) documents
+egress controls, timing, independent cache budgets and catch-up limitations.
 
 Local database contents are trusted against malicious replacement. Use a
 caller-owned directory that untrusted processes cannot rename or modify.
@@ -24,7 +42,7 @@ automatically deleting, replacing or re-anchoring an existing store.
 
 ## HTTP transport and cancellation
 
-Bootstrap enforces HTTPS, certificate validation, no proxies, no redirects, no
+Bootstrap and periodic header retrieval enforce HTTPS, certificate validation, no proxies, no redirects, no
 automatic retries, and no response decompression at runtime, including when an
 embedding dependency enables extra HTTP client features. It rejects content
 encodings and bounds application reply bytes before copying them into retained
@@ -34,7 +52,7 @@ to that same tiny reply budget.
 Application deadlines stop waiting on HTTP; they cannot forcibly stop an
 already running OS name-resolution call. The HTTP client's resolver uses
 blocking runtime jobs that can outlive cancellation and delay runtime shutdown.
-Repeated canceled bootstrap attempts can overlap those jobs. Connection setup
+Repeated canceled HTTP attempts can overlap those jobs. Connection setup
 can race multiple resolved addresses. Do not interpret one sequential application
 request as a strict one-socket or no-background-work guarantee for HTTPS.
 Callers requiring a hard process-wide shutdown or resolver resource bound need

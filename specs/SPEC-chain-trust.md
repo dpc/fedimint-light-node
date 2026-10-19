@@ -21,7 +21,10 @@ and cannot open validated state. Outbound mainnet synchronization applies that
 validator to bounded peer candidates and exposes selected-tip changes, including
 progress committed before a later peer failure or cancellation. Unsupported remote
 candidates end that peer visit without replacing protected history or stopping
-other peers; local storage failures stop synchronization. Fresh-store bootstrap
+other peers; local storage failures stop synchronization. Optional independently
+scheduled Esplora candidates enter the same atomic selection boundary without
+requiring P2P to supply their headers. Bounded reverse cursors support shallow
+ongoing defense, not arbitrary deep recovery. Fresh-store bootstrap
 authenticates HTTPS endpoints and requires same-height agreement, with explicit
 source-trust and resource policy. P2P backfill becomes queryable only after exact
 linkage into that checkpoint; pre-checkpoint rows carry no independently validated
@@ -35,11 +38,33 @@ and finality integration remain unimplemented.
 
 ## Record justification
 
-Bootstrap source agreement, persistent chain selection, P2P body admission,
+Bootstrap source agreement, independent header transports, persistent chain selection, P2P body admission,
 and guardian delivery jointly enforce this trust boundary, so none alone can
 own the contract coherently.
 
 ## Anchor and headers
+
+### Independent header transports
+
+After bootstrap, public explorer responses have the same adversarial status as
+P2P header candidates. Reputation and authenticated HTTPS identities confer no
+consensus authority. No agreement, advertised height or claimed work overrides
+local contextual validation and relative-work selection. Any single source may
+supply a supported higher-work candidate through the same retention, protection
+and atomic selection boundary; its headers need not also be available over P2P.
+
+Low-rate independent retrieval reduces dependence on P2P availability, but
+proves neither source independence, tip freshness, full consensus validity nor
+body availability. Bounded ancestry support deliberately limits this defense:
+unavailable context and deeper gaps remain degraded rather than creating new
+anchors or automatic recovery. Source failure, stale tips and unsupported
+candidates cannot stop healthy other sources; actual local storage failures do.
+The caller controls this additional egress. Bounded scheduling and cancellation
+must not monopolize the owner for the inter-visit interval or let continuous RPC
+traffic starve due security checks. Numerical limits belong in the
+[operation guide](../docs/guide.md#periodic-explorer-header-candidates).
+
+### Trusted origin and contextual admission
 
 DNS seeds, advertised addresses, successful-peer caches and maintained connection
 counts are availability hints, not additional chain authorities or a quorum.

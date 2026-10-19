@@ -38,6 +38,18 @@ struct Lease {
     previous_failures: Option<u8>,
 }
 
+/// A paced acquisition reservation; no network attempt or failure charged yet.
+enum Acquisition {
+    Dial {
+        addr: SocketAddr,
+        stable: bool,
+        expires: Instant,
+        when: Instant,
+    },
+    Existing,
+    Unavailable(Instant),
+}
+
 /// Bounded caller-driven dial policy with actively maintained idle connections.
 ///
 /// No runtime is created. At most four sockets and four idle tasks exist; a dial
@@ -59,6 +71,8 @@ pub(crate) struct PeerPool {
     checking_out: Option<IdlePeer>,
     /// Dial pacing reservation, survives cancellation.
     next_dial: Instant,
+    /// Retain the original readiness boundary across canceled pacing waits.
+    prepared: Option<Acquisition>,
     /// A failed/canceled exploratory dial gives maintained sockets the next turn.
     failed_exploration: bool,
     /// One shared control-traffic allowance.
@@ -113,6 +127,7 @@ impl PeerPool {
             retiring: Vec::new(),
             checking_out: None,
             next_dial: Instant::now(),
+            prepared: None,
             failed_exploration: false,
             idle_budget: Arc::new(Mutex::new(IdleBudget::new())),
             resolver: None,
@@ -143,7 +158,13 @@ impl PeerPool {
 
     /// Identify an attempt reserved before a canceled handshake or pacing wait.
     pub fn leased_address(&self) -> Option<SocketAddr> {
-        self.leased.as_ref().map(|lease| lease.addr)
+        self.leased
+            .as_ref()
+            .map(|lease| lease.addr)
+            .or(match &self.prepared {
+                Some(Acquisition::Dial { addr, .. }) => Some(*addr),
+                _ => None,
+            })
     }
 
     /// Harvest coalesced hints and retire failed, old or exploratory sockets.
@@ -224,6 +245,31 @@ impl PeerPool {
         sent: &mut usize,
         explore: bool,
     ) -> Result<PeerConnection, (Option<SocketAddr>, SyncError)> {
+        // Ordinary body/submission operations reserve a new attempt each call,
+        // as before. The header owner's explicit prepare/wait API alone resumes
+        // a pacing wait across maintenance opportunities.
+        self.prepared = None;
+        let when = self.prepare_acquire(pacing, deadline, explore).await;
+        sleep_until(when).await;
+        self.acquire_prepared(height, pacing, deadline, received, sent)
+            .await
+    }
+
+    /// Reserve pacing without holding a pool borrow across the caller's wait.
+    /// Re-entry after cancellation retains the original deadline and charges no
+    /// peer failure until a real dial or checkout starts.
+    pub async fn prepare_acquire(
+        &mut self,
+        pacing: Duration,
+        deadline: Duration,
+        explore: bool,
+    ) -> Instant {
+        if let Some(prepared) = &self.prepared {
+            return match prepared {
+                Acquisition::Dial { when, .. } | Acquisition::Unavailable(when) => *when,
+                Acquisition::Existing => Instant::now(),
+            };
+        }
         self.maintain().await;
         self.discover(if self.book.entries.is_empty() {
             deadline
@@ -246,16 +292,53 @@ impl PeerPool {
                 .config
                 .rotation
                 .mul_f64(self.book.rng.random_range(1.0..2.0));
-            self.leased = Some(Lease {
+            let when = self.next_dial.max(Instant::now()) + pacing;
+            self.next_dial = when;
+            self.prepared = Some(Acquisition::Dial {
                 addr,
                 stable,
                 expires: Instant::now() + rotation,
+                when,
+            });
+            return when;
+        }
+        if self.slots.is_empty() {
+            let when = Instant::now() + pacing;
+            self.prepared = Some(Acquisition::Unavailable(when));
+            return when;
+        }
+        self.prepared = Some(Acquisition::Existing);
+        Instant::now()
+    }
+
+    /// Start the reserved acquisition after its pacing deadline.
+    pub async fn acquire_prepared(
+        &mut self,
+        height: u64,
+        pacing: Duration,
+        deadline: Duration,
+        received: &mut usize,
+        sent: &mut usize,
+    ) -> Result<PeerConnection, (Option<SocketAddr>, SyncError)> {
+        let prepared = self.prepared.take().expect("prepared acquisition");
+        if let Acquisition::Unavailable(_) = prepared {
+            return Err((None, SyncError::NoPeers));
+        }
+        if let Acquisition::Dial {
+            addr,
+            stable,
+            expires,
+            when,
+        } = prepared
+        {
+            debug_assert!(Instant::now() >= when);
+            self.leased = Some(Lease {
+                addr,
+                stable,
+                expires,
                 previous_failures: self.book.attempted(addr, pacing),
             });
             self.failed_exploration = true;
-            let when = self.next_dial.max(Instant::now()) + pacing;
-            self.next_dial = when;
-            sleep_until(when).await;
             tracing::debug!(peer = %addr, height, "connecting to peer");
             let result = timeout(
                 deadline,
@@ -280,11 +363,6 @@ impl PeerPool {
                     crate::inventory_observer::InventoryObserver::new(inbox.clone(), group(addr))
                 }),
             });
-        }
-        if self.slots.is_empty() {
-            // Empty/unavailable discovery cannot create a tight retry loop.
-            sleep_until(Instant::now() + pacing).await;
-            return Err((None, SyncError::NoPeers));
         }
         // Release appends to the back, giving every live connection one turn.
         let slot = self.slots.remove(0);
@@ -375,6 +453,7 @@ impl PeerPool {
 
     /// Close all sockets and join idle workers; OS resolver calls may outlive cancellation.
     pub async fn shutdown(&mut self) {
+        self.prepared = None;
         self.leased = None;
         if let Some(idle) = self.checking_out.take() {
             self.retiring.push(idle);

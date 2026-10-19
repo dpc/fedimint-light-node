@@ -9,6 +9,23 @@ use tokio::time::timeout;
 use crate::bootstrap_config::BootstrapConfig;
 use crate::bootstrap_error::BootstrapError;
 
+/// Keep bootstrap and ongoing candidate transport hardening identical even under
+/// dependency feature unification. Application deadlines also cover body reads.
+pub(crate) fn hardened_client(deadline: std::time::Duration) -> Result<Client, reqwest::Error> {
+    Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .use_rustls_tls()
+        .no_gzip()
+        .no_brotli()
+        .no_zstd()
+        .no_deflate()
+        .no_proxy()
+        .pool_max_idle_per_host(0)
+        .connect_timeout(deadline)
+        .build()
+}
+
 /// Sequential HTTPS requests with no redirects, retries, cookies or compression.
 pub(crate) struct BootstrapHttp {
     /// Certificate-validating rustls client, without environment proxies.
@@ -45,18 +62,7 @@ impl BootstrapHttp {
             roots.push(url);
         }
         Ok(Self {
-            client: Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .retry(reqwest::retry::never())
-                .use_rustls_tls()
-                .no_gzip()
-                .no_brotli()
-                .no_zstd()
-                .no_deflate()
-                .no_proxy()
-                .pool_max_idle_per_host(0)
-                .connect_timeout(config.request_timeout)
-                .build()?,
+            client: hardened_client(config.request_timeout)?,
             roots,
             deadline: config.request_timeout,
             remaining: config.sources.len() * 4 + 3,

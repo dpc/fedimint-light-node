@@ -163,9 +163,16 @@ impl GuardianRpc {
             let mut last_visit_ok_unix = None;
             let mut last_selection_unix = None;
             let mut generation = self.sync.status().map_err(io::Error::other)?.generation;
+            // Alternate due security maintenance, with a queue opportunity after
+            // each operation rather than a four-plus-three-second combined slice.
+            let mut explorer_turn = false;
             loop {
+                let explorer_due = self
+                    .sync
+                    .explorer_deadline()
+                    .is_some_and(|due| due <= Instant::now());
                 // Check the clock before dequeuing: a full queue cannot starve sync.
-                if Instant::now() >= next_sync {
+                if Instant::now() >= next_sync && !(explorer_due && explorer_turn) {
                     let now = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .map_err(io::Error::other)?
@@ -206,12 +213,37 @@ impl GuardianRpc {
                         return Err(io::Error::other("sync stopped; explicit recovery required"));
                     }
                     next_sync = Instant::now() + sync_interval(self.sync.mempool_enabled());
+                    explorer_turn = true;
+                // Security maintenance is not idle-only: a busy RPC queue or P2P
+                // stream cannot starve it. One bounded request, then cheap reads
+                // get a turn; never squeeze its three-second deadline into the
+                // one-second P2P idle gap.
+                } else if explorer_due {
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map_err(io::Error::other)?
+                        .as_secs();
+                    self.sync
+                        .explorer_step(now)
+                        .await
+                        .map_err(io::Error::other)?;
+                    explorer_turn = false;
                 }
+                let explorer_deadline = self.sync.explorer_deadline();
                 let request = tokio::select! {
                     biased;
                     request = receive.recv() => request,
-                    _ = tokio::time::sleep_until(next_sync) => continue,
+                    // At most one bounded queued network operation before the
+                    // next top-of-loop maintenance opportunity.
                     request = slow_receive.recv() => request,
+                    _ = tokio::time::sleep_until(next_sync) => continue,
+                    _ = async {
+                        if let Some(due) = explorer_deadline {
+                            tokio::time::sleep_until(due).await;
+                        } else {
+                            std::future::pending::<()>().await;
+                        }
+                    } => continue,
                     result = async {
                         tokio::time::sleep_until(next_coverage).await;
                         // Finish slightly before the due header when possible. Synchronous

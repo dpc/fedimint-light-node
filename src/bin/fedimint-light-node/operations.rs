@@ -145,7 +145,14 @@ pub async fn run(
             sync_config.handshake_timeout = Duration::from_secs(3);
             sync_config.request_timeout = Duration::from_secs(3);
             let sync = HeaderSync::new_with_mempool(store, sync_config, mempool)?
-                .with_fee_policy(fee_policy);
+                .with_fee_policy(fee_policy)
+                .with_explorer_headers(network.explorer_config())?;
+            tracing::info!(
+                event = "explorer_headers",
+                enabled = sync.explorer_deadline().is_some(),
+                sources = network.explorer_config().roots.len(),
+                "periodic untrusted header transports; not checkpoints or a freshness guarantee"
+            );
             let rpc = GuardianRpc::bind(
                 GuardianRpcConfig {
                     bind: rpc_bind,
@@ -277,6 +284,15 @@ pub async fn run(
                 ),
             )?
             .with_fee_policy(fee_policy);
+            if !once {
+                sync = sync.with_explorer_headers(network.explorer_config())?;
+                tracing::info!(
+                    event = "explorer_headers",
+                    enabled = sync.explorer_deadline().is_some(),
+                    sources = network.explorer_config().roots.len(),
+                    "periodic untrusted header transports; not checkpoints or a freshness guarantee"
+                );
+            }
             let mut progress = crate::sync_progress::SyncProgress::default();
             loop {
                 let report = tokio::select! {
@@ -287,7 +303,7 @@ pub async fn run(
                         output::status(sync.store())?;
                         return Err(interrupted());
                     }
-                    report = sync.step(now()?) => report,
+                    report = sync.step_with_explorers(now()?) => report,
                 };
                 progress.report(&sync)?;
                 match report.result {

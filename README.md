@@ -93,6 +93,10 @@ witness-bearing blocks, and explicit transaction submission. A managed outbound
 pool discovers public peers, retains useful connections and rotates an
 exploratory connection. Manually configured peers and a manual-only mode remain
 available. Discovery supplies availability hints, never chain authority.
+Periodic [Esplora header candidates](docs/guide.md#periodic-explorer-header-candidates)
+add independent, low-rate defense against P2P withholding. They pass the same
+contextual validation and work selection as P2P, not a reputation-based quorum.
+This bounded shallow defense does not guarantee freshness or deep recovery.
 
 The loopback [guardian RPC profile](docs/guardian-rpc.md), with optional authentication,
 supports the narrow Fedimint client profile. `--fake-bitcoind` explicitly enables
@@ -142,9 +146,13 @@ DB=./node-data/headers.redb
 "$NODE" --db "$DB" sync
 ```
 
-The default network mode discovers peers; no hand-picked public IP is required.
+The default network mode discovers peers and periodically checks public explorer
+header candidates; no hand-picked public IP is required. `--no-explorer-headers`
+disables periodic explorer traffic without changing trusted initial bootstrap.
 To use only your own node, add `--manual-only --peer 127.0.0.1:8333` to network
-commands. `status` inspects a stopped node offline. Only one process should own
+commands; this also suppresses default periodic explorers, but not initial
+bootstrap HTTPS. Explicit `--header-explorer HTTPS_API_ROOT` opts back in.
+`status` inspects a stopped node offline. Only one process should own
 the database at a time.
 
 Selected height is not proof of freshness or consensus validity. Inspect the

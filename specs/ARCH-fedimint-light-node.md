@@ -21,6 +21,10 @@ stores. Caller-driven outbound mainnet header synchronization leases one connect
 from a bounded maintained pool, using manual addresses, DNS seeds and untrusted
 public address hints. Stable useful slots coexist with rotating exploration;
 peer counts and discovery never establish chain authority.
+Optional independent HTTPS header retrieval feeds bounded reverse candidates
+through the same contextual and atomic selection boundary. Its instance-local
+cursors are untrusted evidence, not persistent branches or checkpoint authority.
+The owner gives due checks bounded opportunities even under continuous RPC load.
 Dropping a visit closes its leased connection; already committed progress remains
 observable. The same exclusive owner retrieves retained canonical blocks on demand
 with witness-aware requests and bounded decoding. Header selection and pruning
@@ -66,7 +70,9 @@ before releasing storage. The executable and any future transport remain thin ca
 
 Independently operated HTTPS sources establish a trusted bootstrap anchor;
 Bitcoin P2P then supplies ancestry, subsequent headers, and complete
-witness-bearing blocks. The validator admits headers into a bounded chain
+witness-bearing blocks. Optional periodic Esplora transports also supply subsequent
+headers without depending on P2P delivery, but never trusted replacements for the
+anchor or block bodies. The validator admits headers into a bounded chain
 store and admits matching bodies to callers under
 [SPEC-chain-trust](SPEC-chain-trust.md). Sources are not permanent chain oracles.
 

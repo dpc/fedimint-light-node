@@ -12,6 +12,73 @@ It exposes explicit static or unavailable fee information for embedding.
 **It is not a Bitcoin Core substitute,
 a full consensus validator, or a production-ready guardian backend.**
 
+## Periodic explorer header candidates
+
+Normal startup, `serve` and ongoing `sync` enable two HTTPS transports:
+`https://mempool.space/api` and `https://blockstream.info/api`. These are **untrusted
+header candidates**, not checkpoints or a quorum. Any one source can supply a
+supported higher-work branch through the same contextual validation and atomic
+selection as P2P, even when every P2P peer withholds headers. This adds defense in
+depth against P2P Sybil attacks; it cannot prove freshness, full consensus validity,
+independent operators or availability of the corresponding block bodies.
+
+Use `--no-explorer-headers` to disable this periodic traffic. Repeated
+`--header-explorer HTTPS_API_ROOT` replaces the defaults; roots must be
+credential-free HTTPS without a query or fragment. Up to eight distinct
+host/port pairs are accepted. `--manual-only` suppresses the default periodic
+explorers, but explicit header roots opt back in. It does **not** suppress existing
+trusted initial HTTPS bootstrap. Trusted bootstrap `--source` policy remains
+separate. One-shot operations, including `sync --once`, do not start this monitor.
+Library constructors remain disabled; configure `ExplorerHeaderConfig` explicitly
+and drive `explorer_step`, `step_with_explorers`, or `GuardianRpc`.
+
+Each source has an independent initial delay of 0–30 minutes and subsequent
+15–45 minute visit intervals. A visit attempts at most 16 requests within 120
+seconds, including failures and cancellations. One application HTTP request is
+active at a time, with at least one second between starts and a three-second
+whole-request deadline. Standard tip-hash and single raw-header replies have
+65-byte and 161-byte application body limits. No redirects, environment proxies,
+retries or decompression are accepted. These are not HTTP-header, TLS, DNS or
+process-memory limits, nor a hard HTTPS socket cap.
+An attempt starts only if its full HTTP budget fits the remaining visit window.
+Synchronous admission and runtime scheduling can still finish later; the visit
+window is not a hard wall-clock completion guarantee.
+
+The owner gives due checks explicit opportunities, not just idle time. RPC serves
+cheap reads between bounded operations; a single HTTP request can add up to three
+seconds of foreground delay. Caller-driven `sync` preserves configured P2P
+exchange deadlines: maintenance runs during pacing and between exchanges, not by
+repeatedly canceling a connection before it can be established. A long configured
+discovery, handshake or exchange can defer maintenance; the cadence is not a strict
+wall-clock guarantee. The existing four-P2P-socket limit is unchanged.
+
+Each source pins a snapshot and follows hashes backwards until it reaches usable
+retained ancestry. It retains at most **256 unknown headers**, further capped by
+the configured candidate and store capacities. This adds an independent cache
+budget of at most 160 KiB of raw header payload across eight sources, plus bounded
+metadata and allocation overhead, outside the single P2P candidate budget.
+Cursors survive visits and cancellation, but not process restart. Connected
+suffixes validate completely before publication; unsupported depth, protection or
+ancestry limits never authorize re-anchoring or automatic recovery.
+
+**This is shallow ongoing defense, not arbitrary deep catch-up.** A snapshot
+requiring 256 unknown headers needs up to 17 successful visits, roughly eight
+hours at the mean cadence before foreground delays or failures. A larger
+pre-existing gap may not advance at all through these transports. Pinned snapshots
+avoid endlessly chasing a moving tip, but do not guarantee keeping up.
+
+Failures stop only that source's visit. Local exponential backoff starts at
+45–60 minutes and caps at 18–24 hours, never earlier than its ordinary deadline.
+HTTP 429, and 503 with `Retry-After`, honor seconds or HTTP dates up to seven days;
+larger/overflowing valid delays or overlong hints suspend that source for the
+instance rather than retrying too early. Other malformed hints use local backoff.
+Successful completed snapshots reset the exponent. State is instance-local, so
+restarts do not preserve rate reservations. Actual local store failure still stops
+the owner; explorer disagreement, stale data and unsupported candidates do not.
+
+See [SPEC-chain-trust](../specs/SPEC-chain-trust.md) for the governing trust boundary
+and [SECURITY.md](../SECURITY.md) for residual HTTP/DNS cancellation limits.
+
 ## Why a light node for guardians?
 
 Fedimint already delays consumption of Bitcoin blocks behind the observed tip.

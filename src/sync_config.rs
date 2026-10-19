@@ -3,9 +3,10 @@ use std::time::Duration;
 
 /// Explicit budgets for a single-foreground, outbound-only mainnet synchronizer.
 ///
-/// There is exactly one foreground request and candidate globally per service,
+/// There is exactly one foreground request and P2P candidate globally per service,
 /// bounded idle drivers, and no persistent alternative branches. Hard ceilings
 /// bound misconfiguration too; these are implementation limits, not production defaults.
+/// Explicit explorer configuration adds separate bounded untrusted reverse cursors.
 #[derive(Debug, Clone)]
 pub struct SyncConfig {
     /// Up to sixteen explicit numeric addresses; empty is valid with discovery enabled.

@@ -27,6 +27,12 @@ asynchronous deadline; Ctrl-C cancels bootstrap or serving. Synchronous work and
 OS resolver shutdown have the limits described in [SECURITY.md](../SECURITY.md).
 The store persists across stops, including a checkpoint published just before
 cancellation. No fee estimate or synthetic Core status is enabled by default.
+Ongoing [periodic Esplora header candidates](guide.md#periodic-explorer-header-candidates)
+are enabled by default in the CLI, independently of trusted bootstrap. Due checks
+receive maintenance opportunities even under continuous RPC load. Each HTTP
+request can add up to three seconds of foreground delay; a complete multi-request
+visit never blocks the owner as one operation. Disable with `--no-explorer-headers`;
+`--manual-only` suppresses default explorers unless explicit header roots opt in.
 
 Once startup prints `rpc_listen=`, use either:
 

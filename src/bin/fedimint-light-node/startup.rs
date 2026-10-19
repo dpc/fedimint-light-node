@@ -13,6 +13,7 @@ pub async fn run(
     mut options: Options,
     mut shutdown: Pin<&mut impl Future<Output = io::Result<()>>>,
 ) -> Result<()> {
+    options.network.explorer_config().validate()?;
     if options.guardian_id.is_some() {
         return Err("normal startup is unbound; use serve with explicit guardian preflight".into());
     }

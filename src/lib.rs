@@ -8,6 +8,8 @@
 //! authenticates bounded recent ancestry into it. No API establishes full consensus
 //! validity or objective freshness. Outbound mainnet header synchronization and
 //! on-demand witness-bearing block retrieval continue without those sources.
+//! Explicitly configured periodic Esplora candidates can independently advance
+//! supported higher-work headers, never replace the pinned trust origin.
 //! The same exclusive owner submits bounded caller-owned transactions; a completed
 //! local write establishes neither peer acceptance, propagation nor confirmation.
 //! An optional bounded loopback RPC profile supports guardian clients, with
@@ -22,6 +24,11 @@ pub mod bootstrap_config;
 pub mod bootstrap_error;
 pub mod declared_pow;
 pub mod decode_error;
+pub mod explorer_header_config;
+mod explorer_headers;
+mod explorer_http;
+#[cfg(test)]
+mod explorer_test_support;
 pub mod fee_policy;
 pub mod frame_error;
 pub mod guardian_binding;

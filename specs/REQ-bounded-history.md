@@ -15,10 +15,13 @@ before caller buffering; transport buffers and concurrency remain caller-owned.
 Validated mainnet storage keeps one fixed-size validation checkpoint per retained
 header at or above the trust anchor, including retarget and median-time context,
 plus a pinned protection floor.
-Candidate suffixes are bounded by header capacity; no alternative branch pool exists.
+Candidate suffixes are bounded by header capacity; no persistent alternative branch pool exists.
 Header synchronization bounds manual/discovered candidates, maintained sockets,
 sequential foreground visits, message counts, wire bytes, deadlines and candidate
-state. One global foreground candidate/body budget remains separate from aggregate
+state. Optional periodic explorer transports add independently bounded,
+instance-local reverse-header cursors, not durable branches or context authority.
+Their source count, attempts, lifetime per visit, response bodies and pacing are
+bounded independently of the P2P candidate. One global foreground P2P candidate/body budget remains separate from aggregate
 idle control budgets and bounded coalesced hints. Protocol header counts and version
 strings pass structural preflight before variable decoding; unsolicited bodies are
 rejected before payload reads. On-demand body retrieval shares that exclusive owner:

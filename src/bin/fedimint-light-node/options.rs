@@ -58,6 +58,8 @@ impl Options {
                         .parse::<SocketAddr>()
                         .expect("constant address")
                 || self.network.manual_only
+                || self.network.no_explorer_headers
+                || !self.network.header_explorer.is_empty()
                 || !self.network.peer.is_empty()
                 || self.network.timeout_seconds != 20)
         {
@@ -278,15 +280,38 @@ pub struct Network {
     /// Optional IPv4:port or [IPv6]:port peers; repeat up to sixteen times.
     #[arg(long)]
     pub peer: Vec<SocketAddr>,
-    /// Disable DNS/gossip dialing; use only explicitly configured peers (including private nodes).
+    /// Disable DNS/gossip dialing and default periodic explorers; explicit header roots opt back in.
+    /// Does not disable trusted initial HTTPS bootstrap.
     #[arg(long)]
     pub manual_only: bool,
+    /// Disable periodic untrusted explorer headers in serve/ongoing sync (not initial bootstrap).
+    #[arg(long, conflicts_with = "header_explorer")]
+    pub no_explorer_headers: bool,
+    /// Replace default periodic explorers with repeated HTTPS API roots; opts in even with manual-only.
+    #[arg(long)]
+    pub header_explorer: Vec<String>,
     /// Whole exchange deadline in seconds, not an inactivity timeout.
     #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u64).range(1..=60))]
     pub timeout_seconds: u64,
 }
 
 impl Network {
+    /// Explicit periodic transport policy, independent of trusted bootstrap sources.
+    pub fn explorer_config(
+        &self,
+    ) -> fedimint_light_node::explorer_header_config::ExplorerHeaderConfig {
+        use fedimint_light_node::explorer_header_config::ExplorerHeaderConfig;
+        if !self.header_explorer.is_empty() {
+            ExplorerHeaderConfig {
+                roots: self.header_explorer.clone(),
+            }
+        } else if self.no_explorer_headers || self.manual_only {
+            ExplorerHeaderConfig::default()
+        } else {
+            ExplorerHeaderConfig::public_defaults()
+        }
+    }
+
     /// Construct the bounded foreground service and maintained pool configuration.
     pub fn sync_config(
         &self,

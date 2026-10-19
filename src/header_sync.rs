@@ -4,7 +4,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::p2p::message_blockdata::GetHeadersMessage;
 use bitcoin::{Block, BlockHash, Target, Transaction, block::Header};
-use tokio::time::{sleep, timeout};
+use tokio::time::timeout;
 
 use crate::block_download::download;
 use crate::block_download_config::BlockDownloadConfig;
@@ -25,6 +25,10 @@ use crate::transaction_submission_report::{
 };
 use crate::validated_header_store::ValidatedHeaderStore;
 
+#[cfg(test)]
+#[path = "explorer_sync_tests.rs"]
+mod explorer_tests;
+
 /// Caller-driven mainnet v1 header synchronization from an initialized trusted store.
 ///
 /// Each paced `step` leases a peer from the maintained outbound pool. Bounded idle
@@ -32,6 +36,7 @@ use crate::validated_header_store::ValidatedHeaderStore;
 /// manual peers. The caller supplies a Tokio runtime with I/O and time enabled.
 /// No runtime, listener or global configuration is installed. One foreground
 /// candidate and body decoder avoid multiplicative per-peer download budgets.
+/// Explicit explorer configuration adds separately bounded reverse-header cursors.
 ///
 /// Dropping the `step` future closes its socket and drops any unselected candidate.
 /// Other idle connections remain maintained. Already committed progress remains observable
@@ -58,6 +63,10 @@ pub struct HeaderSync {
     coverage_window: tokio::time::Instant,
     /// Background receive allowance; whole attempts reserved even on cancellation.
     coverage_bytes: usize,
+    /// Explicit opt-in HTTP evidence caches, independent of the P2P candidate.
+    explorers: Option<crate::explorer_headers::ExplorerHeaders>,
+    /// P2P pacing survives cancellation of a short owner maintenance slice.
+    peer_start: Option<tokio::time::Instant>,
 }
 
 /// Selected state, not a freshness claim or a consensus-valid chain guarantee.
@@ -103,6 +112,8 @@ pub enum VisitEnd {
     EmptyResponse,
     /// Fairness budget exhausted; another call leases another available pool connection.
     RequestLimit,
+    /// A due independent header check gets a turn at a completed exchange boundary.
+    Maintenance,
 }
 
 impl HeaderSync {
@@ -137,7 +148,169 @@ impl HeaderSync {
             mempool: enabled.then(crate::mempool_observation::MempoolObservation::new),
             coverage_window: tokio::time::Instant::now(),
             coverage_bytes: 8 * 1024 * 1024,
+            explorers: None,
+            peer_start: None,
         })
+    }
+
+    /// Opt into independently paced untrusted HTTPS header candidates.
+    ///
+    /// This is distinct from trusted initial bootstrap. Each source retains at
+    /// most 256 reverse headers (also capped by storage and candidate budgets).
+    /// The caller must drive `explorer_step`; `GuardianRpc` does so automatically.
+    pub fn with_explorer_headers(
+        mut self,
+        config: crate::explorer_header_config::ExplorerHeaderConfig,
+    ) -> Result<Self, SyncError> {
+        let explorers =
+            crate::explorer_headers::ExplorerHeaders::new(config, self.config.candidate_headers)?;
+        self.explorers = (!explorers.sources.is_empty()).then_some(explorers);
+        Ok(self)
+    }
+
+    /// Next HTTP maintenance opportunity, never a wait inside a chain operation.
+    pub fn explorer_deadline(&self) -> Option<tokio::time::Instant> {
+        self.explorers
+            .as_ref()
+            .and_then(|sources| sources.deadline())
+    }
+
+    /// Perform at most one three-second HTTP request if due; never wait for pacing.
+    ///
+    /// Attempts and visit deadlines are reserved before awaiting, so cancellation
+    /// retains cursor and charges the attempt. Remote failures only back off that
+    /// source; actual local failures latch the same terminal state as P2P.
+    /// Returns whether a maintenance opportunity was consumed, not tip freshness.
+    pub async fn explorer_step(&mut self, now: u64) -> Result<bool, SyncError> {
+        use crate::explorer_http::FetchError;
+        if self.stopped {
+            return Err(SyncError::Stopped);
+        }
+        let Some(index) = self
+            .explorers
+            .as_mut()
+            .and_then(|sources| sources.reserve())
+        else {
+            return Ok(false);
+        };
+        // State stays in the owner across the await; dropping this future cannot
+        // discard or refund a partially completed multi-visit snapshot.
+        let sources = self.explorers.as_ref().expect("reserved source");
+        let expected = sources.sources[index].expected;
+        let (path, limit) = match expected {
+            Some(hash) => (format!("block/{hash}/header"), 161),
+            None => ("blocks/tip/hash".into(), 65),
+        };
+        let reply = sources.http.text(index, &path, limit).await;
+        let text = match reply {
+            Ok(text) => text,
+            Err(error) => {
+                let retry = match error {
+                    FetchError::RateLimited(Some(delay)) => delay,
+                    FetchError::RateLimited(None) => {
+                        self.explorers.as_mut().expect("reserved source").sources[index]
+                            .suspended = true;
+                        tracing::warn!(
+                            source = index,
+                            "explorer suspended for this instance: excessive Retry-After"
+                        );
+                        std::time::Duration::ZERO
+                    }
+                    _ => std::time::Duration::ZERO,
+                };
+                self.explorers.as_mut().expect("reserved source").sources[index].fail(retry, false);
+                tracing::debug!(source = index, ?error, "explorer header visit deferred");
+                return Ok(true);
+            }
+        };
+        let result = self.accept_explorer_reply(index, expected, &text, now);
+        if let Err(error) = result {
+            self.stopped |= error.is_terminal();
+            self.explorers.as_mut().expect("reserved source").sources[index]
+                .fail(std::time::Duration::ZERO, true);
+            tracing::warn!(source = index, %error, "explorer candidate rejected; no new trust anchor");
+            if self.stopped {
+                return Err(error);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Decode hash-pinned evidence and enter the same atomic admission as P2P.
+    fn accept_explorer_reply(
+        &mut self,
+        index: usize,
+        expected: Option<BlockHash>,
+        text: &str,
+        now: u64,
+    ) -> Result<(), SyncError> {
+        use bitcoin::hex::FromHex;
+        let text = text.strip_suffix('\n').unwrap_or(text);
+        let sources = self.explorers.as_mut().expect("reserved source");
+        let source = &mut sources.sources[index];
+        if let Some(hash) = expected {
+            let bytes = <[u8; 80]>::from_hex(text)
+                .map_err(|_| SyncError::Protocol("explorer header encoding"))?;
+            let header: Header = bitcoin::consensus::deserialize(&bytes)
+                .map_err(|_| SyncError::Protocol("explorer header encoding"))?;
+            if header.block_hash() != hash {
+                return Err(SyncError::Protocol("explorer header hash mismatch"));
+            }
+            check_declared_pow(&header, Target::MAX_ATTAINABLE_MAINNET)
+                .map_err(HeaderError::from)?;
+            source.expected = Some(header.prev_blockhash);
+            source.reverse.push(header);
+        } else {
+            if text.len() != 64 {
+                return Err(SyncError::Protocol("explorer tip hash length"));
+            }
+            source.expected = Some(
+                text.parse()
+                    .map_err(|_| SyncError::Protocol("explorer tip hash encoding"))?,
+            );
+        }
+        // Intervening P2P selection can make an interior cached header canonical.
+        // Scan retained state once rather than once per cached header.
+        if source.generation != self.generation && !source.reverse.is_empty() {
+            let hashes: std::collections::HashMap<_, _> = source
+                .reverse
+                .iter()
+                .enumerate()
+                .map(|(i, header)| (header.block_hash(), i))
+                .collect();
+            let (floor, tip) = self.store.bounds()?;
+            for height in (floor..=tip).rev() {
+                let hash = self.store.header(height)?.block_hash();
+                if let Some(&position) = hashes.get(&hash) {
+                    source.reverse.truncate(position);
+                    source.expected = Some(hash);
+                    break;
+                }
+            }
+        }
+        source.generation = self.generation;
+        let parent_hash = source.expected.expect("decoded target");
+        if let Some(mut parent) = self.store.height_for_hash(parent_hash)? {
+            let mut candidate = std::mem::take(&mut source.reverse);
+            source.expected = None;
+            if !candidate.is_empty() {
+                candidate.reverse();
+                let generation = self.generation;
+                self.select_candidate(&mut parent, &mut candidate, now)?;
+                if generation != self.generation {
+                    tracing::info!(
+                        source = index,
+                        height = parent,
+                        generation = self.generation,
+                        "higher-work explorer headers selected; freshness and body availability unproven"
+                    );
+                }
+            }
+            self.explorers.as_mut().expect("reserved source").sources[index].complete();
+        } else if source.reverse.len() >= sources.cap {
+            return Err(SyncError::UnsupportedCandidate);
+        }
+        Ok(())
     }
 
     /// Whether observation and its additional network traffic were explicitly enabled.
@@ -478,6 +651,42 @@ impl HeaderSync {
     /// `status` afterward because a completed atomic batch may have made progress.
     #[tracing::instrument(level = "debug", skip_all)]
     pub async fn step(&mut self, now: u64) -> SyncReport {
+        self.step_inner(now, false).await
+    }
+
+    /// Caller-driven synchronization with explorer checks during pacing and at
+    /// completed exchange boundaries, preserving configured P2P exchange deadlines.
+    ///
+    /// Unlike RPC's short slices, this can wait the configured retry interval,
+    /// driving due HTTP maintenance while waiting. A due check can end a peer visit
+    /// early, dropping its unselected candidate without changing selected history.
+    pub async fn step_with_explorers(&mut self, now: u64) -> SyncReport {
+        self.step_inner(now, true).await
+    }
+
+    /// Wait against an original absolute pacing deadline, never restart it when
+    /// an explorer operation consumes part of the interval.
+    async fn pace_until(
+        &mut self,
+        until: tokio::time::Instant,
+        now: u64,
+        maintain: bool,
+    ) -> Result<(), SyncError> {
+        while tokio::time::Instant::now() < until {
+            let due = maintain.then(|| self.explorer_deadline()).flatten();
+            if let Some(due) = due {
+                tokio::time::sleep_until(until.min(due)).await;
+                if tokio::time::Instant::now() < until {
+                    self.explorer_step(now).await?;
+                }
+            } else {
+                tokio::time::sleep_until(until).await;
+            }
+        }
+        Ok(())
+    }
+
+    async fn step_inner(&mut self, now: u64, maintain: bool) -> SyncReport {
         let started = std::time::Instant::now();
         if self.stopped {
             return SyncReport {
@@ -485,7 +694,32 @@ impl HeaderSync {
                 result: Err(SyncError::Stopped),
             };
         }
-        sleep(self.config.retry_delay).await;
+        if maintain && let Err(error) = self.explorer_step(now).await {
+            return SyncReport {
+                peer: None,
+                result: Err(error),
+            };
+        }
+        let start = *self
+            .peer_start
+            .get_or_insert_with(|| tokio::time::Instant::now() + self.config.retry_delay);
+        if let Err(error) = self.pace_until(start, now, maintain).await {
+            return SyncReport {
+                peer: None,
+                result: Err(error),
+            };
+        }
+        self.peer_start = None;
+        let prepared = self
+            .pool
+            .prepare_acquire(self.config.retry_delay, self.config.handshake_timeout, true)
+            .await;
+        if let Err(error) = self.pace_until(prepared, now, maintain).await {
+            return SyncReport {
+                peer: None,
+                result: Err(error),
+            };
+        }
         let tip = match self.store.bounds() {
             Ok((_, tip)) => tip,
             Err(error) => {
@@ -500,13 +734,12 @@ impl HeaderSync {
         let mut sent = usize::MAX;
         let mut connection = match self
             .pool
-            .acquire(
+            .acquire_prepared(
                 tip,
                 self.config.retry_delay,
                 self.config.handshake_timeout,
                 &mut 2_000_000,
                 &mut sent,
-                true,
             )
             .await
         {
@@ -520,8 +753,16 @@ impl HeaderSync {
             }
         };
         let peer = Some(connection.addr);
+        if maintain && let Err(error) = self.explorer_step(now).await {
+            return SyncReport {
+                peer,
+                result: Err(error),
+            };
+        }
         let mut useful = false;
-        let result = self.visit(&mut connection, now, &mut useful).await;
+        let result = self
+            .visit(&mut connection, now, &mut useful, maintain)
+            .await;
         if result.as_ref().is_err_and(SyncError::is_terminal) {
             self.stopped = true;
             tracing::error!(?peer, error = ?result, "terminal header visit failure");
@@ -543,6 +784,7 @@ impl HeaderSync {
         stream: &mut PeerConnection,
         now: u64,
         useful: &mut bool,
+        maintain: bool,
     ) -> Result<VisitEnd, SyncError> {
         let mut candidate: Vec<Header> = Vec::with_capacity(self.config.candidate_headers);
         let mut parent = 0;
@@ -597,6 +839,13 @@ impl HeaderSync {
             if !candidate.is_empty() {
                 self.select_candidate(&mut parent, &mut candidate, now)?;
                 *useful |= candidate.is_empty();
+            }
+            if maintain
+                && self
+                    .explorer_deadline()
+                    .is_some_and(|due| due <= tokio::time::Instant::now())
+            {
+                return Ok(VisitEnd::Maintenance);
             }
         }
         Ok(VisitEnd::RequestLimit)

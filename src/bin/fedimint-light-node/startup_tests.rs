@@ -24,6 +24,38 @@ fn mempool_is_explicit_opt_in_without_credentials() {
     options.check_command_scope().unwrap();
 }
 
+#[test]
+fn explorer_egress_defaults_manual_override_and_conflicts() {
+    let normal = Options::try_parse_from(["node"]).unwrap();
+    assert_eq!(normal.network.explorer_config().roots.len(), 2);
+    for flag in ["--manual-only", "--no-explorer-headers"] {
+        let options = Options::try_parse_from(["node", flag]).unwrap();
+        assert!(options.network.explorer_config().roots.is_empty());
+    }
+    let explicit = Options::try_parse_from([
+        "node",
+        "--manual-only",
+        "--header-explorer",
+        "https://example.org/api",
+    ])
+    .unwrap();
+    assert_eq!(
+        explicit.network.explorer_config().roots,
+        ["https://example.org/api"]
+    );
+    assert!(
+        Options::try_parse_from([
+            "node",
+            "--no-explorer-headers",
+            "--header-explorer",
+            "https://example.org/api"
+        ])
+        .is_err()
+    );
+    let misplaced = Options::try_parse_from(["node", "--no-explorer-headers", "status"]).unwrap();
+    assert!(misplaced.check_command_scope().is_err());
+}
+
 #[tokio::test]
 async fn shutdown_cancels_initial_bootstrap_without_publishing_or_network() {
     let dir = tempfile::tempdir().unwrap();
