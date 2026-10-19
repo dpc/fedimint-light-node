@@ -412,6 +412,12 @@ async fn source_failures_never_publish_a_store() {
         )
         .await;
         let error = result.err().expect("must reject");
+        if let BootstrapError::Http(error) = &error {
+            assert!(
+                error.url().is_none(),
+                "HTTP diagnostics must not retain source URLs"
+            );
+        }
         assert!(
             match fault {
                 Fault::Disagree => matches!(error, BootstrapError::Disagreement),

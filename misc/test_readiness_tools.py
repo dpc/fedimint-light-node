@@ -15,6 +15,7 @@ from unittest import mock
 
 from readiness_watchdog import run_owned
 from readiness_monitor import SafetyMonitor
+from readiness_logging import node_event
 import readiness_watchdog
 
 spec = importlib.util.spec_from_file_location(
@@ -25,6 +26,19 @@ spec.loader.exec_module(capture)
 
 
 class EvidenceSafety(unittest.TestCase):
+    def test_tracing_event_sampling(self):
+        self.assertEqual(node_event(
+            '2026-10-19T00:00:00Z INFO fedimint_light_node::operations: '
+            'RPC listener ready event="rpc_listening" rpc_listen=127.0.0.1:1234 '
+            'rpc_no_auth=true fake_bitcoind=false submission_only=false\n'),
+            {"event": "rpc_listening", "address": "127.0.0.1:1234"})
+        self.assertEqual(node_event(
+            'INFO fedimint_light_node::sync_progress: selected chain summary '
+            'event="sync_progress" selected_height=42 connections=3 candidates=10\n'),
+            {"event": "sync_progress", "connections": 3})
+        self.assertIsNone(node_event('WARN event="sync_degraded" connections=0'))
+        self.assertIsNone(node_event('sync: connections=4 visit=Ok(Empty)'))
+
     def fuzz_failure(self, wall_seconds):
         """Use tiny local executables to check fail-closed campaign accounting."""
         with tempfile.TemporaryDirectory() as directory:

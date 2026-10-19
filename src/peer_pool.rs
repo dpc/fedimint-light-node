@@ -164,6 +164,7 @@ impl PeerPool {
             }
             if slot.idle.finished() || slot.expires <= now {
                 let slot = self.slots.remove(index);
+                tracing::debug!(peer = %slot.addr, "retiring expired or closed peer");
                 self.book.attempted(slot.addr, Duration::from_secs(30));
                 self.retiring.push(slot.idle);
             } else {
@@ -255,6 +256,7 @@ impl PeerPool {
             let when = self.next_dial.max(Instant::now()) + pacing;
             self.next_dial = when;
             sleep_until(when).await;
+            tracing::debug!(peer = %addr, height, "connecting to peer");
             let result = timeout(
                 deadline,
                 handshake_inner(addr, height, received, sent, self.inbox.is_some()),
@@ -263,6 +265,7 @@ impl PeerPool {
             let (stream, version) = result
                 .map_err(|_| (Some(addr), SyncError::Timeout))?
                 .map_err(|e| (Some(addr), e))?;
+            tracing::debug!(peer = %addr, "peer handshake completed");
             return Ok(PeerConnection {
                 stream,
                 addr,
@@ -285,6 +288,7 @@ impl PeerPool {
         }
         // Release appends to the back, giving every live connection one turn.
         let slot = self.slots.remove(0);
+        tracing::debug!(peer = %slot.addr, "reusing maintained peer");
         self.leased = Some(Lease {
             addr: slot.addr,
             stable: slot.stable,

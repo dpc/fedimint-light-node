@@ -4,6 +4,23 @@ use crate::fee_policy::FeePolicy;
 use crate::rpc_method::fee_value;
 
 #[test]
+fn logging_names_do_not_echo_unknown_methods_or_parameters() {
+    for (method, expected) in [
+        ("getblock", "getblock"),
+        ("secret-password", "unsupported"),
+        ("sendrawtransaction", "sendrawtransaction"),
+    ] {
+        let request = crate::rpc_method::RpcRequest::parse(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": method,
+            "params": ["secret-transaction-bytes"],
+        }))
+        .ok()
+        .unwrap();
+        assert_eq!(request.log_method(), expected);
+    }
+}
+
+#[test]
 fn fixed_fees_roundtrip_through_pinned_schema_including_one_satoshi() {
     for sats in [1, 999, 1000, 1001, 100_000_001, 2_100_000_000_000_000] {
         let value = fee_value(FeePolicy::Fixed {

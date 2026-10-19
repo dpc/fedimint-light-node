@@ -251,6 +251,9 @@ impl HeaderSync {
                 },
             )
             .await;
+        tracing::debug!(event = "mempool_coverage", height, %hash,
+            outcome = if result.is_ok() { "covered" } else { "failed" },
+            "approximate observation coverage attempt");
         match result {
             Ok(_) => Ok(()),
             Err(error) if self.stopped => Err(error),
@@ -473,7 +476,9 @@ impl HeaderSync {
     /// `now` never revalidates already-selected history or proves tip freshness.
     /// Cancel by dropping this future (for example with `tokio::select!`); inspect
     /// `status` afterward because a completed atomic batch may have made progress.
+    #[tracing::instrument(level = "debug", skip_all)]
     pub async fn step(&mut self, now: u64) -> SyncReport {
+        let started = std::time::Instant::now();
         if self.stopped {
             return SyncReport {
                 peer: None,
@@ -484,6 +489,7 @@ impl HeaderSync {
         let tip = match self.store.bounds() {
             Ok((_, tip)) => tip,
             Err(error) => {
+                tracing::error!(%error, "header store failed; stopping synchronization");
                 self.stopped = true;
                 return SyncReport {
                     peer: None,
@@ -506,6 +512,7 @@ impl HeaderSync {
         {
             Ok(connection) => connection,
             Err((peer, error)) => {
+                tracing::debug!(?peer, %error, "peer acquisition failed");
                 return SyncReport {
                     peer,
                     result: Err(error),
@@ -517,7 +524,10 @@ impl HeaderSync {
         let result = self.visit(&mut connection, now, &mut useful).await;
         if result.as_ref().is_err_and(SyncError::is_terminal) {
             self.stopped = true;
+            tracing::error!(?peer, error = ?result, "terminal header visit failure");
         }
+        tracing::debug!(?peer, outcome = ?result, elapsed_ms = started.elapsed().as_millis(),
+            "header visit completed");
         if result.is_ok() {
             self.pool.release(connection, useful);
         } else if matches!(result, Err(SyncError::Header(HeaderError::FutureTime))) {

@@ -21,6 +21,9 @@ reset or bootstrap over an existing file. State lives at
 `$XDG_STATE_HOME/fedimint-light-node/chain.redb`, or
 `~/.local/state/fedimint-light-node/chain.redb` when XDG state home is unset.
 Startup prints the path, synchronization progress and ready-to-copy queries.
+Operational logs use `tracing` on stderr at `info` by default; set
+`RUST_LOG=fedimint_light_node=debug` for detailed diagnostics. See the
+[logging policy](docs/logging.md) for levels, privacy and progress sampling.
 
 After the first bootstrap finishes, query from another terminal:
 

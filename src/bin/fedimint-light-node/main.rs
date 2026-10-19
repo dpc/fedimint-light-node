@@ -1,5 +1,6 @@
 //! Runtime, signals and operational presentation belong to this thin executable.
 
+mod logging;
 mod operations;
 mod options;
 mod output;
@@ -10,6 +11,7 @@ mod rpc_credentials;
 mod startup;
 #[cfg(test)]
 mod startup_tests;
+mod sync_progress;
 mod transaction_input;
 
 use std::future::Future;
@@ -23,11 +25,24 @@ use options::Options;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn main() -> ExitCode {
-    let options = Options::parse();
+    let options = Options::try_parse().unwrap_or_else(|mut error| {
+        // Clap otherwise echoes rejected values, including credentials in a
+        // malformed --source URL. Keep the option and parser reason, not input.
+        error.insert(
+            clap::error::ContextKind::InvalidValue,
+            clap::error::ContextValue::String("<redacted>".into()),
+        );
+        error.exit()
+    });
+    logging::init();
+    tracing::debug!(event = "cli_start", "command parsed");
     match run(options) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(()) => {
+            tracing::debug!(event = "cli_complete", "command completed");
+            ExitCode::SUCCESS
+        }
         Err(error) => {
-            eprintln!("error: {error}");
+            tracing::error!(event = "cli_failed", error = %error, "command failed");
             if error
                 .downcast_ref::<io::Error>()
                 .is_some_and(|e| e.kind() == io::ErrorKind::Interrupted)
@@ -73,6 +88,7 @@ fn shutdown() -> io::Result<impl Future<Output = io::Result<()>>> {
             _ = interrupt.recv() => {}
             _ = terminate.recv() => {}
         }
+        tracing::info!(event = "shutdown_requested", "shutdown signal received");
         Ok(())
     })
 }

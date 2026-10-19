@@ -12,16 +12,91 @@ use fedimint_light_node::validated_header_store::ValidatedHeaderStore;
 
 fn command(db: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_fedimint-light-node"));
-    command
-        .arg("--db")
-        .arg(db)
-        .args(["--capacity", "8", "--cache-mib", "1"]);
+    command.env_remove("RUST_LOG").arg("--db").arg(db).args([
+        "--capacity",
+        "8",
+        "--cache-mib",
+        "1",
+    ]);
     command
 }
 
 fn stdout(output: &Output) -> String {
     assert!(output.status.success(), "{output:?}");
     String::from_utf8(output.stdout.clone()).unwrap()
+}
+
+#[test]
+fn logging_defaults_overrides_and_stdout_separation() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("chain.redb");
+    create(&db);
+    let baseline = command(&db).arg("status").output().unwrap();
+    let debug = command(&db)
+        .env("RUST_LOG", "fedimint_light_node=debug")
+        .arg("status")
+        .output()
+        .unwrap();
+    assert_eq!(stdout(&baseline), stdout(&debug));
+    assert!(!String::from_utf8_lossy(&baseline.stderr).contains("DEBUG"));
+    assert!(String::from_utf8_lossy(&debug.stderr).contains("cli_start"));
+    assert!(!debug.stderr.contains(&0x1b));
+
+    std::fs::write(&db, b"invalid").unwrap();
+    for (filter, info, errors) in [
+        (None, true, true),
+        (Some("error"), false, true),
+        (Some("off"), false, false),
+        (Some(""), true, true),
+    ] {
+        let mut cmd = command(&db);
+        if let Some(filter) = filter {
+            cmd.env("RUST_LOG", filter);
+        }
+        let result = cmd.output().unwrap();
+        assert!(!result.status.success());
+        assert!(result.stdout.is_empty());
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert_eq!(stderr.contains("database_selected"), info, "{stderr}");
+        assert_eq!(stderr.contains("cli_failed"), errors, "{stderr}");
+    }
+    let result = command(&db)
+        .env("RUST_LOG", "secret-filter=not-a-level")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("invalid RUST_LOG; using info"));
+    assert!(!stderr.contains("secret-filter"));
+}
+
+#[test]
+fn logging_does_not_echo_source_credentials_or_affect_help() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("chain.redb");
+    for source in [
+        "https://secret-user:secret-password@example.invalid",
+        "operator=https://secret-user:secret-password@example.invalid",
+    ] {
+        let result = command(&db)
+            .env("RUST_LOG", "debug")
+            .args(["bootstrap", "--source", source])
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(!stderr.contains("secret-password"), "{stderr}");
+        assert!(!stderr.contains("secret-user"), "{stderr}");
+    }
+    for flag in ["--help", "--version"] {
+        let result = command(&db)
+            .env("RUST_LOG", "invalid=secret")
+            .arg(flag)
+            .output()
+            .unwrap();
+        assert!(result.status.success());
+        assert!(!result.stdout.is_empty());
+        assert!(result.stderr.is_empty());
+    }
 }
 
 fn create(db: &Path) -> Vec<Header> {
@@ -507,7 +582,7 @@ fn normal_startup_serves_existing_unbound_state_without_credentials_and_stops() 
         let mut line = String::new();
         assert_ne!(reader.read_line(&mut line).unwrap(), 0);
         diagnostics.push_str(&line);
-        if let Some(line) = line.strip_prefix("rpc_listen=") {
+        if let Some((_, line)) = line.split_once("rpc_listen=") {
             assert!(line.contains("rpc_no_auth=true fake_bitcoind=false submission_only=false"));
             break line.split_whitespace().next().unwrap().to_string();
         }

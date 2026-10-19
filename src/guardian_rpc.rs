@@ -155,6 +155,7 @@ impl GuardianRpc {
         let owner = async {
             let mut next_sync = Instant::now();
             let mut next_coverage = Instant::now();
+            let mut next_mempool_summary = Instant::now();
             let mut completed = 0_u64;
             let mut canceled = 0_u64;
             let mut last_code = 0_i32;
@@ -188,10 +189,18 @@ impl GuardianRpc {
                         receive.len(),
                         slow_receive.len()
                     );
-                    let diagnostic = format!(
-                        "{diagnostic} approximate_mempool={:?}",
-                        self.sync.mempool_status().map_err(io::Error::other)?
-                    );
+                    let mempool = self.sync.mempool_status().map_err(io::Error::other)?;
+                    if let Some(status) = mempool
+                        && Instant::now() >= next_mempool_summary
+                    {
+                        tracing::info!(
+                            event = "mempool_summary",
+                            ?status,
+                            "approximate, incomplete and unvalidated observation"
+                        );
+                        next_mempool_summary = Instant::now() + Duration::from_secs(60);
+                    }
+                    let diagnostic = format!("{diagnostic} approximate_mempool={mempool:?}");
                     on_sync(&self.sync, &diagnostic);
                     if self.sync.status().map_err(io::Error::other)?.stopped {
                         return Err(io::Error::other("sync stopped; explicit recovery required"));
@@ -225,10 +234,13 @@ impl GuardianRpc {
                     canceled = canceled.saturating_add(1);
                     continue;
                 }
+                let started = Instant::now();
                 let result = tokio::select! {
                     biased;
                     _ = pending.reply.closed() => {
                         canceled = canceled.saturating_add(1);
+                        tracing::debug!(method = pending.request.log_method(), outcome = "canceled",
+                            "RPC request canceled");
                         continue;
                     },
                     result = timeout(Duration::from_secs(6),
@@ -237,6 +249,12 @@ impl GuardianRpc {
                 };
                 completed = completed.saturating_add(1);
                 last_code = result.as_ref().err().map_or(0, |error| error.code);
+                tracing::debug!(
+                    method = pending.request.log_method(),
+                    code = last_code,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "RPC request completed"
+                );
                 last_rpc_unix = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .ok()
@@ -260,6 +278,9 @@ impl GuardianRpc {
         };
         finish_connections(&mut connections, result.is_err()).await;
         self.sync.shutdown().await;
+        if let Err(error) = &result {
+            tracing::error!(%error, "RPC owner terminated");
+        }
         result
     }
 }

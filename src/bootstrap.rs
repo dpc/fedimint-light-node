@@ -32,6 +32,7 @@ use crate::validated_header_store::ValidatedHeaderStore;
 /// be interrupted; run on a caller-owned dedicated runtime thread if needed.
 /// A crash can leave private staging files. Existing destinations are never replaced.
 /// Reopen with `ValidatedHeaderStore::open_pinned` offline, not by bootstrapping again.
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn bootstrap(
     path: impl AsRef<Path>,
     config: BootstrapConfig,
@@ -47,8 +48,19 @@ pub async fn bootstrap(
         Err(error) => return Err(error.into()),
     }
     let mut http = BootstrapHttp::new(&config)?;
+    tracing::info!(
+        event = "bootstrap_started",
+        sources = config.sources.len(),
+        quorum = config.quorum,
+        "initial checkpoint bootstrap; source trust is required"
+    );
     let (anchor, headers) = timeout(config.total_timeout, async {
         let (anchor, source) = agree(&config, &mut http, now).await?;
+        tracing::info!(
+            event = "checkpoint_agreed",
+            height = anchor.height,
+            "sources agreed; freshness and consensus remain unproven"
+        );
         let floor = anchor
             .height
             .saturating_sub(config.store.header_capacity.get() - 1);
@@ -60,12 +72,14 @@ pub async fn bootstrap(
     })
     .await
     .map_err(|_| BootstrapError::Timeout)??;
-    Ok(ValidatedHeaderStore::create_with_history(
-        path,
-        config.store,
-        anchor,
-        &headers,
-    )?)
+    let store = ValidatedHeaderStore::create_with_history(path, config.store, anchor, &headers)?;
+    tracing::info!(
+        event = "checkpoint_published",
+        height = anchor.height,
+        headers = headers.len(),
+        "initial checkpoint published"
+    );
+    Ok(store)
 }
 
 /// Mainnet's fixed height-one identity, independent of rolling history or sources.

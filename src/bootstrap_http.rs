@@ -79,7 +79,12 @@ impl BootstrapHttp {
             path
         );
         timeout(self.deadline, async {
-            let mut response = self.client.get(url).send().await?;
+            let mut response = self
+                .client
+                .get(url)
+                .send()
+                .await
+                .map_err(reqwest::Error::without_url)?;
             if response.status() != reqwest::StatusCode::OK {
                 return Err(BootstrapError::Reply("HTTP status (redirects forbidden)"));
             }
@@ -93,7 +98,11 @@ impl BootstrapHttp {
                 return Err(BootstrapError::Limit("HTTP response bytes"));
             }
             let mut body = Vec::with_capacity(limit);
-            while let Some(chunk) = response.chunk().await? {
+            while let Some(chunk) = response
+                .chunk()
+                .await
+                .map_err(reqwest::Error::without_url)?
+            {
                 if chunk.len() > limit - body.len() {
                     return Err(BootstrapError::Limit("HTTP response bytes"));
                 }

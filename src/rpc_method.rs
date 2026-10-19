@@ -24,6 +24,14 @@ pub(crate) struct RpcRequest {
 }
 
 impl RpcRequest {
+    /// Return only supported names, never arbitrary client-supplied strings.
+    pub(crate) fn log_method(&self) -> &str {
+        match self.method.as_str() {
+            name @ ("getrawmempool" | "getblockcount" | "getblockhash" | "getblockchaininfo"
+            | "getnetworkinfo" | "estimatesmartfee" | "getblock" | "sendrawtransaction") => name,
+            _ => "unsupported",
+        }
+    }
     pub(crate) fn is_network(&self) -> bool {
         matches!(self.method.as_str(), "getblock" | "sendrawtransaction")
     }

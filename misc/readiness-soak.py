@@ -20,6 +20,7 @@ import time
 
 from readiness_watchdog import owned_command, run_owned
 from readiness_monitor import SafetyMonitor
+from readiness_logging import node_event
 
 
 def interface_bytes():
@@ -99,7 +100,6 @@ def main():
     next_restart = started + args.restart_seconds
     restarts = 0
     address = None
-    last_sync_log = 0
     observed_sync_lines = 0
     connections_histogram = {}
     launched_at = started
@@ -121,7 +121,11 @@ def main():
     def launch():
         if hashlib.sha256(pathlib.Path(binary).read_bytes()).hexdigest() != binary_digest:
             raise RuntimeError("binary changed during campaign; refusing mixed-version restart")
-        child = subprocess.Popen(owned_command(command), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        # The sampling contract requires default info summaries, independent of
+        # the invoking shell's logging overrides. No live run is implied here.
+        env = dict(os.environ, RUST_LOG="info")
+        child = subprocess.Popen(owned_command(command), env=env,
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         thread = threading.Thread(target=read_lines, args=(child,), daemon=True)
         thread.start()
         return child, thread
@@ -175,19 +179,14 @@ def main():
                 while not events.empty():
                     line = events.get_nowait()
                     text = line.decode(errors="replace")
-                    if text.startswith("rpc_listen="):
-                        address = text.split()[0].split("=", 1)[1]
-                    if "connections=" in text:
-                        connections = int(text.split("connections=")[1].split()[0])
+                    event = node_event(text)
+                    if event and event["event"] == "rpc_listening":
+                        address = event["address"]
+                    if event and event["event"] == "sync_progress":
+                        connections = event["connections"]
                         max_connections = max(max_connections, connections)
                         connections_histogram[connections] = connections_histogram.get(connections, 0) + 1
-                    if text.startswith("sync:"):
                         observed_sync_lines += 1
-                        # Retain failures and one healthy sample/minute rather
-                        # than exhausting the finite log on normal one-second visits.
-                        if "visit=Ok(" in text and now - last_sync_log < 60:
-                            continue
-                        last_sync_log = now
                     log_bytes += len(line)
                     if log_bytes > 16 * 1024**2:
                         raise RuntimeError("16MiB log budget")
@@ -279,6 +278,7 @@ def main():
                     "hash_references": hash_references, "lag_samples": lag_samples,
                     "peaks": monitor.peaks, "max_connections": max_connections,
                     "observed_sync_lines": observed_sync_lines,
+                    "sync_sampling": "tracing sync_progress selection changes and 60s summaries",
                     "connections_histogram": connections_histogram,
                     "restarts": restarts, "final_status": final.stdout,
                     "child_user_seconds": resource.getrusage(resource.RUSAGE_CHILDREN).ru_utime,

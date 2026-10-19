@@ -37,10 +37,8 @@ pub async fn run(
         options.db = Some(db);
     }
     let db = options.db.as_ref().expect("database path resolved");
-    eprintln!(
-        "database={} (persistent; never reset automatically)",
-        db.display()
-    );
+    tracing::info!(event = "database_selected", database = %db.display(),
+        "persistent state; never reset automatically");
     // A directory, symlink (including dangling), partial or invalid existing file
     // is NOT an absent database. Bootstrap itself publishes without overwrite.
     let absent = match std::fs::symlink_metadata(db) {
@@ -63,7 +61,7 @@ pub async fn run(
         io::Error::new(error.kind(), format!("cannot bind RPC at {bind}: {error}; use --rpc-bind 127.0.0.1:0 to choose an available port"))
     })?);
     if absent {
-        eprintln!(
+        tracing::info!(
             "initializing new mainnet state; HTTPS source trust, NOT full consensus validation"
         );
         options.command = Some(Command::Bootstrap {
@@ -74,6 +72,8 @@ pub async fn run(
             total_seconds: 600,
         });
         operations::run(options.clone(), shutdown.as_mut()).await?;
+    } else {
+        tracing::info!(event = "database_reopened", "using pinned local checkpoint");
     }
     let mut rpc = options.rpc.clone();
     if rpc.rpc_credentials.is_none() {

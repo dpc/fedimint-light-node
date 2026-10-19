@@ -54,7 +54,7 @@ pub async fn run(
             if !source.is_empty() {
                 config.sources = source;
             }
-            eprintln!(
+            tracing::warn!(
                 "bootstrap: trusting configured source agreement; no consensus/freshness guarantee"
             );
             let store = tokio::select! {
@@ -128,11 +128,13 @@ pub async fn run(
                     return Err("--standalone cannot include guardian state".into());
                 }
                 crate::recovery::identity(&store, None)?;
-                eprintln!("mode=standalone guardian_coordination=absent");
+                tracing::info!(mode = "standalone", guardian_coordination = "absent");
             } else {
                 store.preflight_guardian(guardian.preflight(options.guardian_id)?)?;
-                eprintln!(
-                    "mode=bound-guardian-manual preflight=passed automatic_commit_coordination=absent"
+                tracing::info!(
+                    mode = "bound-guardian-manual",
+                    preflight = "passed",
+                    automatic_commit_coordination = "absent"
                 );
             }
             output::status(&store)?;
@@ -154,50 +156,53 @@ pub async fn run(
                 sync,
             )
             .await?;
-            eprintln!(
-                "rpc_listen={} rpc_no_auth={rpc_no_auth} fake_bitcoind={fake_bitcoind} submission_only={allow_rpc_submission}",
-                rpc.local_addr()?
-            );
+            tracing::info!(event = "rpc_listening", rpc_listen = %rpc.local_addr()?,
+                rpc_no_auth, fake_bitcoind, submission_only = allow_rpc_submission,
+                "RPC listener ready");
             if rpc_no_auth {
                 let addr = rpc.local_addr()?;
-                eprintln!(
+                tracing::warn!(
                     "read-only local RPC; any local process can query; do not forward this port"
                 );
-                eprintln!(
+                tracing::info!(
                     "bitcoin-cli -datadir=/tmp -conf=/dev/null -rpcconnect={} -rpcport={} getblockcount",
                     addr.ip(),
                     addr.port()
                 );
-                eprintln!(
+                tracing::info!(
                     "curl --noproxy '*' -H 'Content-Type: application/json' --data '{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getblockcount\",\"params\":[]}}' 'http://{addr}/'"
                 );
             }
             if fake_bitcoind {
-                eprintln!("WARNING: {SYNTHETIC_STATUS_WARNING}");
+                tracing::warn!("{SYNTHETIC_STATUS_WARNING}");
             }
             if mempool {
-                eprintln!(
+                tracing::warn!(
                     "mempool observation is approximate, incomplete and unvalidated; latest 20 selected bodies are downloaded under bounded background budgets; presence is not acceptance, absence is not confirmation"
                 );
             }
-            eprintln!(
+            tracing::warn!(
                 "guardian protection is NOT automatic; reads never advance durable protection"
             );
             if allow_rpc_submission {
-                eprintln!(
+                tracing::warn!(
                     "WARNING: submission-only; no input fee/burn checks, mempool or acceptance guarantee; cancellation may follow delivery"
                 );
             }
-            rpc.run(async { let _ = shutdown.await; }, |sync, diagnostic| {
-                match sync.status() {
-                    Ok(status) => {
-                        let (connections, candidates, cache_failed) = sync.peer_counts();
-                        eprintln!("sync: selected_height={} selected_hash={} generation={} connections={connections} candidates={candidates} cache_failed={cache_failed} freshness=unproven visit={diagnostic}",
-                            status.height, status.hash, status.generation);
+            let mut progress = crate::sync_progress::SyncProgress::default();
+            rpc.run(
+                async {
+                    let _ = shutdown.await;
+                },
+                |sync, diagnostic| {
+                    if let Err(error) = progress.report(sync) {
+                        tracing::error!(%error, "cannot read local synchronization state");
                     }
-                    Err(error) => eprintln!("sync: local state error: {error}"),
-                }
-            }).await?;
+                    tracing::debug!(event = "sync_visit", diagnostic, "owner visit");
+                },
+            )
+            .await?;
+            tracing::info!(event = "rpc_stopped", "RPC owner and peer pool stopped");
         }
         Command::Broadcast {
             network,
@@ -223,7 +228,7 @@ pub async fn run(
                 ),
             )?
             .with_fee_policy(fee_policy);
-            eprintln!(
+            tracing::warn!(
                 "submission is a local write only; cancellation may follow delivery; explicit retry is allowed"
             );
             let report = tokio::select! {
@@ -272,6 +277,7 @@ pub async fn run(
                 ),
             )?
             .with_fee_policy(fee_policy);
+            let mut progress = crate::sync_progress::SyncProgress::default();
             loop {
                 let report = tokio::select! {
                     biased;
@@ -283,19 +289,13 @@ pub async fn run(
                     }
                     report = sync.step(now()?) => report,
                 };
-                let status = sync.status()?;
-                eprintln!(
-                    "peer={:?} selected_height={} selected_hash={} generation={} stopped={}",
-                    report.peer, status.height, status.hash, status.generation, status.stopped,
-                );
-                let (connections, candidates, cache_failed) = sync.peer_counts();
-                eprintln!(
-                    "connections={connections} candidates={candidates} peer_cache_write_failed={cache_failed}"
-                );
+                progress.report(&sync)?;
                 match report.result {
-                    Ok(end) => eprintln!("visit={end:?}; freshness remains unproven"),
+                    Ok(end) => {
+                        tracing::debug!(?end, peer = ?report.peer, "visit completed; freshness unproven")
+                    }
                     Err(error) => {
-                        eprintln!("visit failed: {error}");
+                        tracing::debug!(%error, peer = ?report.peer, "visit failed");
                         if once || error.is_terminal() {
                             sync.shutdown().await;
                             output::status(sync.store())?;
@@ -354,10 +354,8 @@ pub async fn run(
             };
             sync.shutdown().await;
             output::block(&path, &block)?;
-            eprintln!(
-                "wrote height={height} hash={hash} to {}; protection unchanged",
-                path.display()
-            );
+            tracing::info!(height, %hash, output = %path.display(),
+                "block written; protection unchanged");
         }
     }
     Ok(())
