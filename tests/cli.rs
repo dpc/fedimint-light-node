@@ -529,7 +529,11 @@ fn normal_startup_serves_existing_unbound_state_without_credentials_and_stops() 
     );
     assert!(child.finish().status.success());
     reader.read_to_string(&mut diagnostics).unwrap();
-    assert!(diagnostics.contains("bitcoin-cli -rpcconnect=127.0.0.1"));
+    assert!(
+        diagnostics.contains("bitcoin-cli -datadir=/tmp -conf=/dev/null -rpcconnect=127.0.0.1")
+    );
+    assert!(!diagnostics.contains("-rpcuser"));
+    assert!(!diagnostics.contains("-rpcpassword"));
     assert!(!diagnostics.contains("initializing new mainnet state"));
     assert!(stdout(&command(&db).arg("status").output().unwrap()).contains("selected_height=3"));
 }

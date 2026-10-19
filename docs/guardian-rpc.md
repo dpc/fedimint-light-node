@@ -30,15 +30,17 @@ cancellation. No fee estimate or synthetic Core status is enabled by default.
 Once startup prints `rpc_listen=`, use either:
 
 ```sh
-bitcoin-cli -rpcconnect=127.0.0.1 -rpcport=18443 -rpcuser=demo -rpcpassword=demo getblockcount
+bitcoin-cli -datadir=/tmp -conf=/dev/null -rpcconnect=127.0.0.1 -rpcport=18443 getblockcount
 curl --noproxy '*' -H 'Content-Type: application/json' \
   --data '{"jsonrpc":"2.0","id":1,"method":"getblockcount","params":[]}' \
   http://127.0.0.1:18443/
 ```
 
-The server ignores credentials in unauthenticated mode. The dummy client
-credentials accommodate clients that require a password or cookie. Locally tested
-Bitcoin Core CLI 31.1.0 also works without them. No Core daemon is needed.
+No credentials or Core daemon are needed; Bitcoin Core CLI 31.1.0 was tested
+without a username or password. `-datadir=/tmp` selects an existing directory,
+avoiding packaged defaults such as a nonexistent `/var/lib/bitcoind`.
+`-conf=/dev/null` prevents your local `bitcoin.conf` from affecting the query.
+These options do not create a Core database or modify your Core configuration.
 Use `cargo run -- --fake-bitcoind` only when you want the synthetic
 `getblockchaininfo` and `getnetworkinfo` compatibility schema described below.
 `--db /trusted/path/chain.redb` overrides the path; custom `--capacity` must match
@@ -99,7 +101,7 @@ terminal A before starting `serve`:
 
 ```sh
 DEMO=/tmp/the-directory-created-above
-rpc() { bitcoin-cli -datadir="$DEMO" -rpcconnect=127.0.0.1 -rpcport=18443 -rpcuser=demo -rpcpassword=demo "$@"; }
+rpc() { bitcoin-cli -datadir="$DEMO" -conf=/dev/null -rpcconnect=127.0.0.1 -rpcport=18443 "$@"; }
 rpc getblockchaininfo
 rpc getnetworkinfo
 HEIGHT=$(rpc getblockcount)

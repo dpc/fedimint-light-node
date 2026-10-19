@@ -25,11 +25,12 @@ Startup prints the path, synchronization progress and ready-to-copy queries.
 After the first bootstrap finishes, query from another terminal:
 
 ```sh
-bitcoin-cli -rpcconnect=127.0.0.1 -rpcport=18443 -rpcuser=demo -rpcpassword=demo getblockcount
+bitcoin-cli -datadir=/tmp -conf=/dev/null -rpcconnect=127.0.0.1 -rpcport=18443 getblockcount
 ```
 
-The dummy credentials work with clients that insist on supplying credentials;
-the server does not check them. No Bitcoin Core daemon is needed. Any local
+No credentials or Bitcoin Core daemon are needed. The client options select an
+existing directory and an empty configuration instead of your local Core setup;
+they do not create a Core database. Any local
 process can query this endpoint; **do not forward its port**. Ctrl-C stops the
 node and preserves state. Initial bootstrap trusts configured HTTPS source
 agreement and needs Internet HTTPS, DNS and outbound Bitcoin P2P access; it can

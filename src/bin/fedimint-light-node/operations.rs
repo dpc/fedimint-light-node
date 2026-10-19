@@ -162,7 +162,7 @@ pub async fn run(
                     "read-only local RPC; any local process can query; do not forward this port"
                 );
                 eprintln!(
-                    "bitcoin-cli -rpcconnect={} -rpcport={} -rpcuser=demo -rpcpassword=demo getblockcount",
+                    "bitcoin-cli -datadir=/tmp -conf=/dev/null -rpcconnect={} -rpcport={} getblockcount",
                     addr.ip(),
                     addr.port()
                 );
