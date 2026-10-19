@@ -58,6 +58,14 @@ allocation is not bounded by the 32 admitted addresses. See
 [peer management](docs/peer-management.md) for exact control budgets and limits.
 
 There is no library-created runtime, permanent source oracle or body cache.
+Explicit `--mempool` observation requests legacy transaction relay and downloads
+recent selected bodies under separate background budgets. This is an unvalidated
+in-memory observation cache, not transaction acceptance. Checksum-protected inventory
+still contains arbitrary peer claims; keyed fingerprints can falsely suppress
+entries. Reorganizations invalidate coverage without resurrecting removed entries.
+The [RPC guide](docs/guardian-rpc.md#approximate-mempool-observation) documents
+independent inventory, staging, cache, coverage and response-copy bounds.
+No-auth reads remain independent of the authenticated submission boundary.
 Synchronous bounded hashing, validation and durable publication
 between awaits cannot be interrupted. A dedicated caller-owned runtime thread
 can keep that work off latency-sensitive threads.

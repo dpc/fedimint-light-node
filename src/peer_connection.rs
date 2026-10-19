@@ -4,7 +4,7 @@ use bitcoin::p2p::ServiceFlags;
 use tokio::net::TcpStream;
 
 use crate::block_decode::BlockDecodeLimits;
-use crate::header_wire::{Message, receive_inner};
+use crate::header_wire::{Message, receive_observed};
 use crate::sync_error::SyncError;
 
 /// Exclusive clean-boundary lease; dropping it closes an interrupted exchange.
@@ -27,6 +27,8 @@ pub(crate) struct PeerConnection {
     pub idle_bytes: usize,
     /// Remaining idle frames in that window.
     pub idle_frames: u16,
+    /// Optional inventory allowance and inbox, shared across lease transitions.
+    pub observer: Option<crate::inventory_observer::InventoryObserver>,
 }
 
 impl PeerConnection {
@@ -36,7 +38,7 @@ impl PeerConnection {
         bytes: &mut usize,
         block: Option<BlockDecodeLimits>,
     ) -> Result<Message, SyncError> {
-        match receive_inner(&mut self.stream, bytes, block).await? {
+        match receive_observed(&mut self.stream, bytes, block, self.observer.as_mut()).await? {
             Message::Addresses(addresses) => {
                 for addr in addresses {
                     if self.learned.len() == 32 {

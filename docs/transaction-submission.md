@@ -58,9 +58,12 @@ caps reads even if the trusted file grows.
 This is deliberately direct `tx` submission rather than an inventory relay service.
 The shared handshake requires protocol version at least 70012, remote `relay=true`,
 `NODE_WITNESS`, and either full or limited network service. Services and relay are
-peer-selection hints, not honest-delivery guarantees. Our `relay=false` asks the
+peer-selection hints, not honest-delivery guarantees. Our default `relay=false` asks the
 peer not to send transaction announcements to us; it does not forbid sending our
 transaction to that peer. No serving capability is advertised.
+Explicit `--mempool` instead requests `relay=true` for the separate bounded
+[observation view](guardian-rpc.md#approximate-mempool-observation).
+That choice does not change submission authorization or imply transaction acceptance.
 
 Primary sources checked against current Bitcoin Core source and the stable v30.0
 reference:

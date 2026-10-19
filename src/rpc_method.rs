@@ -148,6 +148,19 @@ pub(crate) async fn dispatch(
     }
     let p = &request.params;
     match request.method.as_str() {
+        "getrawmempool" if p.is_empty() || (p.len() == 1 && p[0] == false) => {
+            let txids = sync.mempool_snapshot().map_err(storage)?.ok_or_else(|| {
+                RpcError::new(-32601, "mempool observation disabled; enable --mempool")
+            })?;
+            // Build the result tree directly rather than copying an intermediate
+            // Vec<String> through serde; one bounded txid scratch vector suffices.
+            Ok(Value::Array(
+                txids
+                    .into_iter()
+                    .map(|txid| Value::String(txid.to_string()))
+                    .collect(),
+            ))
+        }
         "getblockcount" if p.is_empty() => Ok(json!(status.height)),
         "getblockhash" if p.len() == 1 => {
             let height = p[0].as_u64().ok_or_else(RpcError::params)?;
@@ -243,7 +256,9 @@ pub(crate) async fn dispatch(
             Ok(json!(report.txid.to_string()))
         }
         "getblockcount" | "getblockhash" | "getblockchaininfo" | "getnetworkinfo"
-        | "estimatesmartfee" | "getblock" | "sendrawtransaction" => Err(RpcError::params()),
+        | "estimatesmartfee" | "getblock" | "sendrawtransaction" | "getrawmempool" => {
+            Err(RpcError::params())
+        }
         _ => Err(RpcError::new(
             -32601,
             "method not supported by guardian-only RPC",

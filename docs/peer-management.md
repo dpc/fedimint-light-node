@@ -61,7 +61,7 @@ acceptance or a freshness claim.
 
 The pool has **one global foreground header candidate and block payload/decoder**,
 not one per connection. Existing aggregate body/submission budgets include new
-handshakes. Returned blocks belong to callers. Idle traffic has a separate shared
+handshakes. Returned blocks belong to callers. Idle control traffic has a separate shared
 1 MiB/minute receive allowance, with at most 256 KiB and 64 frames/minute per
 connection. Per-connection windows survive leases; shared refunds apply only to
 the window that issued the reservation. Idle framing may retain at most one 162,003-byte header payload per
@@ -70,6 +70,15 @@ unsolicited bodies fail before payload allocation. There are no body
 queues. Each driver has one lease command/result and one coalesced 32-address
 sample. Quotas bound application state, not kernel TCP buffers, allocator overhead
 or host RSS.
+
+With explicit `--mempool`, inventory uses separate bounded accounting during both
+idle and leased reads: 8 MiB/minute aggregate, 2 MiB/minute and 1,024 frames per
+connection. Complete checksum verification precedes observation admission.
+At most 1,024 staged transaction IDs per socket and a 4,096-entry aggregate inbox
+bound queued observations; excess is dropped and counted. Background coverage
+retains only selected-body fingerprints and shares the one foreground decoder.
+See the [observation limits](guardian-rpc.md#approximate-mempool-observation)
+for cache, coverage traffic, cancellation and response-copy bounds.
 
 ## Discovery and cache
 

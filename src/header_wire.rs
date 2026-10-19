@@ -78,6 +78,16 @@ pub(crate) async fn receive_inner(
     remaining_bytes: &mut usize,
     block_limits: Option<BlockDecodeLimits>,
 ) -> Result<Message, SyncError> {
+    receive_observed(stream, remaining_bytes, block_limits, None).await
+}
+
+/// Use a separate bounded inventory allowance when observation is explicitly enabled.
+pub(crate) async fn receive_observed(
+    stream: &mut TcpStream,
+    remaining_bytes: &mut usize,
+    block_limits: Option<BlockDecodeLimits>,
+    observer: Option<&mut crate::inventory_observer::InventoryObserver>,
+) -> Result<Message, SyncError> {
     if *remaining_bytes < 24 {
         return Err(SyncError::Protocol("exchange byte budget"));
     }
@@ -89,6 +99,17 @@ pub(crate) async fn receive_inner(
         return Err(SyncError::Protocol("network magic"));
     }
     let command = &envelope[4..16];
+    if command == b"inv\0\0\0\0\0\0\0\0\0"
+        && let Some(observer) = observer
+    {
+        let len = u32::from_le_bytes(envelope[16..20].try_into().expect("fixed length"));
+        observer
+            .receive(stream, len as usize, &envelope[20..24])
+            .await?;
+        // This complete envelope was charged to the independent inventory budget.
+        *remaining_bytes += 24;
+        return Ok(Message::Ignore);
+    }
     let block_frame = if command == b"block\0\0\0\0\0\0\0" {
         Some(
             V1BlockFrame::parse(

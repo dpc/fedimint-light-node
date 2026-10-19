@@ -18,6 +18,7 @@ pub(crate) async fn handshake_inner(
     height: u64,
     bytes: &mut usize,
     sent: &mut usize,
+    relay: bool,
 ) -> Result<(TcpStream, VersionMessage), SyncError> {
     let mut stream = TcpStream::connect(peer).await?;
     let mut version = VersionMessage::new(
@@ -35,7 +36,7 @@ pub(crate) async fn handshake_inner(
         "/fedimint-light-node:0.1/".into(),
         height.min(i32::MAX as u64) as i32,
     );
-    version.relay = false;
+    version.relay = relay;
     {
         // rust-bitcoin's constructor still defaults to 70001. Advertise the
         // witness-era protocol plus optional BIP133 fee filtering, without opting

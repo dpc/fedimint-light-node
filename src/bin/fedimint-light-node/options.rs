@@ -51,6 +51,7 @@ impl Options {
             && (self.rpc.rpc_credentials.is_some()
                 || self.rpc.rpc_no_auth
                 || self.rpc.fake_bitcoind
+                || self.rpc.mempool
                 || self.rpc.allow_rpc_submission
                 || self.rpc.rpc_bind
                     != "127.0.0.1:18443"
@@ -212,6 +213,9 @@ pub enum Command {
 /// RPC flags shared by normal startup and explicit serving.
 #[derive(Clone, Debug, Args)]
 pub struct RpcOptions {
+    /// Observe an approximate unvalidated mempool and download recent selected bodies.
+    #[arg(long)]
+    pub mempool: bool,
     /// Numeric loopback listen address; use port 0 to select an available port.
     #[arg(long, default_value = "127.0.0.1:18443")]
     pub rpc_bind: SocketAddr,

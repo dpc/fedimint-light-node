@@ -842,3 +842,49 @@ async fn timed_out_dns_wait_retains_one_job_instead_of_multiplying_resolvers() {
     pool.shutdown().await;
     assert!(pool.resolver.is_none());
 }
+
+#[tokio::test]
+async fn observed_idle_inventory_has_separate_rates_and_canceled_lease_never_commits() {
+    use bitcoin::hashes::Hash;
+    use bitcoin::p2p::message_blockdata::Inventory;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let serving = tokio::spawn(server(listener));
+    let mut pool = PeerPool::new(&[address], PeerPoolConfig::manual_only()).unwrap();
+    let inbox = crate::inventory_observer::InventoryInbox::new();
+    pool.inbox = Some(inbox.clone());
+    let connection = acquire(&mut pool).await;
+    let mut remote = serving.await.unwrap();
+    pool.release(connection, true);
+    let inventory = NetworkMessage::Inv(vec![Inventory::Transaction(bitcoin::Txid::all_zeros())]);
+    // More than the old 64-control-frame allowance, but well below inventory's rate.
+    for _ in 0..70 {
+        send(&mut remote, inventory.clone()).await.unwrap();
+    }
+    send(&mut remote, NetworkMessage::Ping(42)).await.unwrap();
+    assert_eq!(read(&mut remote).await, NetworkMessage::Pong(42));
+    assert_eq!(inbox.lock().unwrap().queue.len(), 70);
+    let mut connection = acquire(&mut pool).await;
+    let frame = serialize(&RawNetworkMessage::new(Network::Bitcoin.magic(), inventory));
+    remote.write_all(&frame[..frame.len() - 1]).await.unwrap();
+    assert!(
+        timeout(
+            Duration::from_millis(20),
+            connection.receive(&mut 1024, None)
+        )
+        .await
+        .is_err()
+    );
+    drop(connection);
+    assert_eq!(inbox.lock().unwrap().queue.len(), 70);
+    let mut byte = [0];
+    assert_eq!(
+        timeout(Duration::from_secs(1), remote.read(&mut byte))
+            .await
+            .unwrap()
+            .unwrap(),
+        0
+    );
+    pool.shutdown().await;
+}

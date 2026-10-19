@@ -37,6 +37,16 @@ fn config() -> StoreConfig {
 }
 
 fn service(path: &std::path::Path, peer: SocketAddr, fee: FeePolicy, tip: usize) -> HeaderSync {
+    service_observation(path, peer, fee, tip, false)
+}
+
+fn service_observation(
+    path: &std::path::Path,
+    peer: SocketAddr,
+    fee: FeePolicy,
+    tip: usize,
+    mempool: bool,
+) -> HeaderSync {
     let headers: Vec<Header> = include_bytes!("data/mainnet-headers-0-2035.raw")
         .chunks_exact(80)
         .take(9)
@@ -59,7 +69,7 @@ fn service(path: &std::path::Path, peer: SocketAddr, fee: FeePolicy, tip: usize)
             .select_suffix(store.bounds().unwrap().1, chunk, 2_000_000_000)
             .unwrap();
     }
-    HeaderSync::new(
+    HeaderSync::new_with_mempool(
         store,
         SyncConfig {
             peers: vec![peer],
@@ -70,9 +80,159 @@ fn service(path: &std::path::Path, peer: SocketAddr, fee: FeePolicy, tip: usize)
             requests_per_visit: 1,
             candidate_headers: 4,
         },
+        mempool,
     )
     .unwrap()
     .with_fee_policy(fee)
+}
+
+#[tokio::test]
+async fn mempool_loopback_inventory_rpc_and_autonomous_selected_body_exclusion() {
+    use bitcoin::hashes::Hash;
+    use bitcoin::p2p::message_blockdata::Inventory;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let allow_body = Arc::new(AtomicBool::new(false));
+    let serve_body = allow_body.clone();
+    let block = genesis_block(Network::Bitcoin);
+    let confirmed = block.txdata[0].compute_txid();
+    let pending = bitcoin::Txid::from_byte_array([7; 32]);
+    let server = tokio::spawn(async move {
+        loop {
+            let (mut stream, addr) = listener.accept().await.unwrap();
+            let NetworkMessage::Version(version) = p2p_read(&mut stream).await.unwrap() else {
+                panic!("expected version");
+            };
+            assert!(version.relay);
+            assert_eq!(version.version, 70013);
+            let address = Address::new(&addr, ServiceFlags::NETWORK | ServiceFlags::WITNESS);
+            let mut version = VersionMessage::new(
+                ServiceFlags::NETWORK | ServiceFlags::WITNESS,
+                0,
+                address.clone(),
+                address,
+                0,
+                "/observation-test/".into(),
+                0,
+            );
+            version.version = 70013;
+            p2p_send(&mut stream, NetworkMessage::Version(version)).await;
+            p2p_send(&mut stream, NetworkMessage::Verack).await;
+            assert_eq!(p2p_read(&mut stream).await.unwrap(), NetworkMessage::Verack);
+            while let Ok(message) = p2p_read(&mut stream).await {
+                match message {
+                    NetworkMessage::GetHeaders(_) => {
+                        // Inventory is received during a foreground lease, not just idle.
+                        p2p_send(
+                            &mut stream,
+                            NetworkMessage::Inv(vec![
+                                Inventory::Transaction(confirmed),
+                                Inventory::Transaction(pending),
+                            ]),
+                        )
+                        .await;
+                        p2p_send(&mut stream, NetworkMessage::Headers(vec![])).await;
+                        // An idle keepalive guarantees a clean checked inventory boundary.
+                        p2p_send(
+                            &mut stream,
+                            NetworkMessage::Inv(vec![Inventory::Transaction(pending)]),
+                        )
+                        .await;
+                    }
+                    NetworkMessage::GetData(items) => {
+                        assert_eq!(items, vec![Inventory::WitnessBlock(block.block_hash())]);
+                        if serve_body.load(Ordering::SeqCst) {
+                            // A healthy body slower than the disabled-mode one-second
+                            // header interval must still complete through the RPC owner.
+                            tokio::time::sleep(Duration::from_millis(1500)).await;
+                            p2p_send(&mut stream, NetworkMessage::Block(block.clone())).await;
+                        } else {
+                            p2p_send(&mut stream, NetworkMessage::NotFound(items)).await;
+                        }
+                    }
+                    NetworkMessage::Ping(nonce) => {
+                        p2p_send(&mut stream, NetworkMessage::Pong(nonce)).await
+                    }
+                    NetworkMessage::Pong(_) => {}
+                    other => panic!("unexpected message {other:?}"),
+                }
+            }
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let mut sync = service_observation(
+        &dir.path().join("chain"),
+        address,
+        FeePolicy::Unavailable,
+        0,
+        true,
+    );
+    assert!(sync.step(2_000_000_000).await.result.is_ok());
+    assert_eq!(sync.mempool_snapshot().unwrap().unwrap().len(), 2);
+    let rpc = GuardianRpc::bind(
+        GuardianRpcConfig {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            auth: RpcAuth::NoAuth,
+            fake_bitcoind: false,
+            allow_submission: false,
+        },
+        sync,
+    )
+    .await
+    .unwrap();
+    let addr = rpc.local_addr().unwrap();
+    let (stop, stopped) = oneshot::channel();
+    let (visits, mut visit_times) = tokio::sync::mpsc::channel(8);
+    let task = tokio::spawn(rpc.run(
+        async {
+            let _ = stopped.await;
+        },
+        move |_, _| {
+            let _ = visits.try_send(tokio::time::Instant::now());
+        },
+    ));
+    async fn query(addr: SocketAddr, params: Value) -> Value {
+        let body =
+            json!({"jsonrpc":"2.0", "id":1, "method":"getrawmempool", "params":params}).to_string();
+        let response = wire(addr, format!(
+            "POST / HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()
+        ).as_bytes()).await;
+        serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap()
+    }
+    let initial = query(addr, json!([])).await;
+    assert!(
+        initial["result"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(confirmed.to_string()))
+    );
+    allow_body.store(true, Ordering::SeqCst);
+    // Leave a full idle slice. Polling itself deliberately cancels coverage, and
+    // an initial NotFound can defer the next body attempt until the next header.
+    tokio::time::sleep(Duration::from_secs(7)).await;
+    assert_eq!(
+        query(addr, json!([false])).await["result"],
+        json!([pending.to_string()])
+    );
+    let first = visit_times.recv().await.unwrap();
+    let second = visit_times.recv().await.unwrap();
+    assert!(second.duration_since(first) >= Duration::from_secs(5));
+    assert!(second.duration_since(first) < Duration::from_secs(6));
+    for params in [
+        json!([true]),
+        json!([false, false]),
+        json!([0]),
+        json!([null]),
+    ] {
+        assert_eq!(query(addr, params).await["error"]["code"], -32602);
+    }
+    stop.send(()).unwrap();
+    task.await.unwrap().unwrap();
+    server.abort();
+    let _ = server.await;
 }
 
 fn rpc_config(fake: bool, submission: bool) -> GuardianRpcConfig {
@@ -210,6 +370,12 @@ async fn default_off_and_strict_json_dialect() {
     tokio::task::spawn_blocking(move || {
         let rpc = client(addr);
         assert!(
+            rpc.call::<Value>("getrawmempool", &[])
+                .unwrap_err()
+                .to_string()
+                .contains("--mempool")
+        );
+        assert!(
             rpc.get_blockchain_info()
                 .unwrap_err()
                 .to_string()
@@ -256,6 +422,42 @@ async fn default_off_and_strict_json_dialect() {
     .await;
     assert_eq!(legacy["result"], 2);
     assert!(legacy["error"].is_null());
+    stop.send(()).unwrap();
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn disabled_observation_keeps_the_existing_owner_header_cadence() {
+    let dir = tempfile::tempdir().unwrap();
+    // A local silent listener exercises bounded failed visits without external traffic.
+    let peer = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let sync = service(
+        &dir.path().join("chain"),
+        peer.local_addr().unwrap(),
+        FeePolicy::Unavailable,
+        0,
+    );
+    let rpc = GuardianRpc::bind(rpc_config(false, false), sync)
+        .await
+        .unwrap();
+    let (stop, stopped) = oneshot::channel();
+    let (send, mut visits) = tokio::sync::mpsc::channel(2);
+    let task = tokio::spawn(rpc.run(
+        async {
+            let _ = stopped.await;
+        },
+        move |_, _| {
+            let _ = send.try_send(tokio::time::Instant::now());
+        },
+    ));
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let first = visits.recv().await.unwrap();
+        let second = visits.recv().await.unwrap();
+        assert!(second.duration_since(first) >= Duration::from_secs(1));
+        assert!(second.duration_since(first) < Duration::from_secs(2));
+    })
+    .await
+    .unwrap();
     stop.send(()).unwrap();
     task.await.unwrap().unwrap();
 }

@@ -75,6 +75,7 @@ async fn real_witness_transport_and_stripped_witness_rejection() {
             idle_window: tokio::time::Instant::now(),
             idle_bytes: 256 * 1024,
             idle_frames: 64,
+            observer: None,
         };
         let result = request_block(
             &mut stream,
@@ -151,6 +152,7 @@ async fn adversarial_exchange(
             idle_window: tokio::time::Instant::now(),
             idle_bytes: 256 * 1024,
             idle_frames: 64,
+            observer: None,
         };
         let mut remaining = budget;
         let client = async {

@@ -46,6 +46,26 @@ Core-status compatibility calls; they remain off by default. See the
 limits and explicit operational commands. With Nix, `nix run .` starts the same
 normal service, or use `nix develop -c cargo run`.
 
+### Optional approximate mempool
+
+```sh
+cargo run -- --mempool
+```
+
+From another terminal:
+
+```sh
+bitcoin-cli -datadir=/tmp -conf=/dev/null -rpcconnect=127.0.0.1 -rpcport=18443 getrawmempool
+```
+
+This default-off mode observes general transaction announcements, not a watch
+list. It also downloads recent selected block bodies under a background budget,
+keeps only keyed transaction fingerprints, and discards the bodies. The result
+is **bounded, incomplete and unvalidated**: presence is not acceptance, and absence
+is not confirmation. Startup has no existing network mempool snapshot. Diagnostics
+report local coverage and losses; an empty result is not an empty network mempool.
+See the [observation limits](docs/guardian-rpc.md#approximate-mempool-observation).
+
 ## Why this fits Fedimint
 
 Fedimint already delays consumption of Bitcoin blocks behind the observed tip.

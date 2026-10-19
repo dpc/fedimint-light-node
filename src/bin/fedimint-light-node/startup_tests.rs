@@ -10,8 +10,18 @@ fn no_arguments_select_normal_read_only_startup() {
     assert!(options.rpc.rpc_credentials.is_none());
     assert!(!options.rpc.allow_rpc_submission);
     assert!(!options.rpc.fake_bitcoind);
+    assert!(!options.rpc.mempool);
     assert_eq!(options.rpc.rpc_bind.to_string(), "127.0.0.1:18443");
     assert_eq!(options.store_config().header_capacity.get(), 52_560);
+}
+
+#[test]
+fn mempool_is_explicit_opt_in_without_credentials() {
+    let options = Options::try_parse_from(["node", "--mempool"]).unwrap();
+    assert!(options.rpc.mempool);
+    assert!(options.rpc.rpc_credentials.is_none());
+    assert!(!options.rpc.allow_rpc_submission);
+    options.check_command_scope().unwrap();
 }
 
 #[tokio::test]

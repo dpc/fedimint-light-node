@@ -53,7 +53,10 @@ witness-bearing blocks on demand over outbound Bitcoin P2P.
 The `bootstrap` API initializes a fresh store from trusted HTTPS source agreement
 and bounded P2P ancestry. A thin executable exposes these library operations;
 the [guardian RPC](guardian-rpc.md) adds loopback service with optional authentication
-and a mainnet walkthrough. There is no mempool or fee estimator.
+and a mainnet walkthrough. There is no validated mempool or fee estimator.
+Explicit `--mempool` adds a bounded, unvalidated
+[transaction observation view](guardian-rpc.md#approximate-mempool-observation)
+and background recent-body downloads; it remains off by default.
 The intended boundaries are described in
 [ARCH-fedimint-light-node](../specs/ARCH-fedimint-light-node.md).
 

@@ -100,6 +100,7 @@ pub async fn run(
             network,
             rpc:
                 RpcOptions {
+                    mempool,
                     rpc_bind,
                     rpc_credentials,
                     rpc_no_auth,
@@ -141,7 +142,8 @@ pub async fn run(
             sync_config.retry_delay = Duration::from_millis(100);
             sync_config.handshake_timeout = Duration::from_secs(3);
             sync_config.request_timeout = Duration::from_secs(3);
-            let sync = HeaderSync::new(store, sync_config)?.with_fee_policy(fee_policy);
+            let sync = HeaderSync::new_with_mempool(store, sync_config, mempool)?
+                .with_fee_policy(fee_policy);
             let rpc = GuardianRpc::bind(
                 GuardianRpcConfig {
                     bind: rpc_bind,
@@ -172,6 +174,11 @@ pub async fn run(
             }
             if fake_bitcoind {
                 eprintln!("WARNING: {SYNTHETIC_STATUS_WARNING}");
+            }
+            if mempool {
+                eprintln!(
+                    "mempool observation is approximate, incomplete and unvalidated; latest 20 selected bodies are downloaded under bounded background budgets; presence is not acceptance, absence is not confirmation"
+                );
             }
             eprintln!(
                 "guardian protection is NOT automatic; reads never advance durable protection"

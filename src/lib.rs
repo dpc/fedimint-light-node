@@ -33,6 +33,8 @@ pub mod header_store;
 pub mod header_sync;
 mod idle_peer;
 pub mod integrity_error;
+mod inventory_observer;
+pub mod mempool_observation;
 mod peer_addr_wire;
 mod peer_address;
 mod peer_book;

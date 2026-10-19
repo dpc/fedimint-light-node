@@ -3,7 +3,7 @@ use std::num::NonZeroU64;
 /// Caller-selected fee information, never a network estimate or confirmation promise.
 ///
 /// This policy is not persisted: supply it on each service construction. It does
-/// not inspect transaction fees or alter submission admission. There is no mempool,
+/// not inspect transaction fees or alter submission admission. There is no validated mempool,
 /// input-value lookup, HTTP fee service, or adaptive default.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum FeePolicy {

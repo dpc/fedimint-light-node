@@ -1,6 +1,7 @@
 # Local RPC and guardian compatibility
 
-`serve` synchronizes headers while exposing **seven guardian-only RPC methods**.
+`serve` synchronizes headers while exposing **seven guardian compatibility methods**,
+plus an explicitly enabled approximate transaction-observation query.
 It is not Bitcoin Core, a full validator, or a production guardian-finality
 integration. The compatibility target is Fedimint
 `502b7ec7da37d231b21d5bce993e9b9a9e7b63a6`, using `bitcoincore-rpc` 0.19.0 and
@@ -61,6 +62,76 @@ its opt-in policy: supply either `--rpc-credentials FILE` or `--rpc-no-auth`.
 The latter conflicts with credentials and `--allow-rpc-submission`; normal
 startup also requires credentials to enable submission. Both forms support only
 numeric IPv4 or IPv6 loopback binds. Do not expose or forward the listener.
+
+## Approximate mempool observation
+
+`cargo run -- --mempool` enables general legacy transaction announcements and
+bounded background downloads toward the latest twenty retained selected bodies.
+Explicit serving also accepts `serve --mempool`. The library equivalent is
+`HeaderSync::new_with_mempool`; embedding callers drive `cover_mempool` between
+higher-priority work. Ordinary startup leaves observation and this extra traffic off.
+
+```sh
+bitcoin-cli -datadir=/tmp -conf=/dev/null -rpcconnect=127.0.0.1 -rpcport=18443 getrawmempool
+```
+
+`getrawmempool` and `getrawmempool false` return full txid strings. They work with
+unauthenticated local reads independently of submission authorization or synthetic
+Core status. Verbose and sequence parameters are rejected; `getmempoolentry`,
+`getmempoolinfo` and `getrawtransaction` remain unsupported. No fees, dependencies,
+acceptance metadata, transaction bodies, persistence or automatic rebroadcast
+are inferred from observations.
+
+This is an incomplete, unvalidated observation view, not a Bitcoin mempool.
+New connections do not supply a full existing snapshot, and the node does not
+request unrestricted mempool dumps. Only legacy `MSG_TX` inventory contributes;
+witness transaction identities are not reinterpreted as transaction IDs.
+
+Logical budgets (engineering defaults, not measured RSS guarantees):
+
+| Resource | Bound |
+| --- | --- |
+| Pending full transaction IDs | 50,000, with two exact bounded expiry/LRU indexes |
+| Lifetime | Two-hour idle expiry; 24-hour hard age from admission |
+| Sources per entry | Four address-prefix groups, saturated; not independent operators |
+| Confirmed filter | Latest twenty retained selected blocks, 1,000,000 keyed 64-bit fingerprints aggregate |
+| Inbox | 4,096 observations; excess dropped and counted |
+| Checksum staging | 1,024 transaction IDs per socket, at most four sockets |
+| Inventory receive | 8 MiB/minute aggregate, 2 MiB/minute and 1,024 frames per connection |
+| Background bodies | 8 MiB/minute, 4 MiB reserved per attempt including failed/canceled work |
+| Coverage slice | One body attempt, at most five seconds and limited by time until due headers; queued RPC preempts it |
+| RPC result | At most 50,000 strings, about 3.35 MB compact JSON |
+
+Repeated source groups do not refresh idle life, LRU position or source count.
+A newly observed group can refresh idle life until source tracking saturates;
+reads never refresh it. A fresh later announcement can re-admit an expired entry.
+The four-socket cap is unchanged. Inventory uses separate bounded accounting from
+control traffic and coverage bodies; full checksums precede inbox admission.
+
+Coverage prefers the newest missing selected body and may lag indefinitely under
+load or peer failure. Successful consumer body fetches also populate the filter.
+Enabling observation increases the interval after each header visit from one to
+five seconds, trading up to four seconds of additional polling latency for useful
+body-download time. Disabled mode retains its one-second interval. Coverage uses
+the actual remaining monotonic time before the next header deadline, with a small
+cleanup margin, and does not reserve an attempt with less than 250 ms available.
+RPC traffic and failed coverage never reset that header deadline. No full
+five-second attempt is guaranteed; queued requests can consume its allowance.
+The owner discards bodies after extracting fingerprints. Hash/height reconciliation
+removes disconnected and out-of-window buckets before reads, including same-height
+reorganizations. Suppressed entries are removed, not hidden for later resurrection;
+a disconnected block does not manufacture observations. Fingerprint collisions can
+falsely suppress entries. Neither presence nor absence proves acceptance or confirmation.
+
+The existing eight HTTP connection limit bounds concurrent snapshot replies,
+including queued `oneshot` results: at most eight result trees and their serialized
+copies can be in flight, plus one bounded construction scratch vector. Requests
+queued for the owner contain no snapshot. These allocations and allocator overhead
+are additional to the cache; the logical txid cap is not a process-memory promise.
+Native `approximate_mempool` diagnostics report pending/covered/target counts,
+fingerprints, evictions, expired entries, coverage-capacity losses and inbox drops.
+The normal diagnostic includes selected generation and tip separately. These are
+not fabricated Core mempool status fields.
 
 ## Explicit disposable mainnet walkthrough
 
@@ -214,7 +285,8 @@ Budgets are fixed and global to one service:
   Block serialization/hex/JSON introduce bounded copies, not zero-copy streaming.
 * Two seconds to read headers/body, eleven seconds waiting for the owner, fourteen
   seconds for the entire HTTP connection. The pinned client waits fifteen seconds.
-* Four-second sync slices, followed by at least one second between visits.
+* Four-second sync slices, followed by one second between visits, or five seconds
+  with observation enabled to allow bounded background body retrieval.
   Network requests have a six-second owner deadline and five-second library
   deadline; block visits use two attempts of at most two seconds each.
 * At most 4 MB block payload and one million decoded elements per foreground

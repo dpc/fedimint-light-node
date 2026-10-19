@@ -6,7 +6,8 @@
 //! has a fourteen-second transport deadline (including reads and writes), shorter
 //! than the pinned guardian client's fifteen-second timeout. Queue cancellation
 //! cancels leased network operations but cannot undo a completed transaction write.
-//! A four-second sync slice becomes due one second after the preceding visit;
+//! A four-second sync slice becomes due one second after the preceding visit
+//! (five seconds with observation enabled, allowing bounded body coverage);
 //! an active bounded RPC may defer it, but queued requests cannot starve it.
 //! Synchronous database/validation work remains non-preemptible.
 
@@ -28,6 +29,11 @@ use crate::rpc_method::{RpcError, RpcRequest, dispatch, fee_value};
 
 /// Fields deliberately synthesized only when `fake_bitcoind` is enabled.
 pub const SYNTHETIC_STATUS_WARNING: &str = "fake-bitcoind: synthetic difficulty=1, mediantime=0, verificationprogress=1, initialblockdownload=false, chainwork=zero, size_on_disk=0, pruned=true, version=190000; NOT full validation, freshness, absolute work, Core pruning or mempool acceptance";
+
+/// Observation trades polling latency for a usable body slice, never changes due priority.
+fn sync_interval(mempool: bool) -> Duration {
+    Duration::from_secs(if mempool { 5 } else { 1 })
+}
 
 /// Bounded loopback listener and exclusive foreground chain owner.
 pub struct GuardianRpc {
@@ -148,6 +154,7 @@ impl GuardianRpc {
         };
         let owner = async {
             let mut next_sync = Instant::now();
+            let mut next_coverage = Instant::now();
             let mut completed = 0_u64;
             let mut canceled = 0_u64;
             let mut last_code = 0_i32;
@@ -181,17 +188,33 @@ impl GuardianRpc {
                         receive.len(),
                         slow_receive.len()
                     );
+                    let diagnostic = format!(
+                        "{diagnostic} approximate_mempool={:?}",
+                        self.sync.mempool_status().map_err(io::Error::other)?
+                    );
                     on_sync(&self.sync, &diagnostic);
                     if self.sync.status().map_err(io::Error::other)?.stopped {
                         return Err(io::Error::other("sync stopped; explicit recovery required"));
                     }
-                    next_sync = Instant::now() + Duration::from_secs(1);
+                    next_sync = Instant::now() + sync_interval(self.sync.mempool_enabled());
                 }
                 let request = tokio::select! {
                     biased;
                     request = receive.recv() => request,
                     _ = tokio::time::sleep_until(next_sync) => continue,
                     request = slow_receive.recv() => request,
+                    result = async {
+                        tokio::time::sleep_until(next_coverage).await;
+                        // Finish slightly before the due header when possible. Synchronous
+                        // decoding remains non-preemptible; no whole-five-second promise.
+                        self.sync.cover_mempool_until(next_sync - Duration::from_millis(25)).await
+                    }, if self.sync.mempool_enabled() => {
+                        result.map_err(io::Error::other)?;
+                        // One completed maintenance slice per header interval. Neither
+                        // failed coverage nor RPC traffic moves the header deadline.
+                        next_coverage = next_sync;
+                        continue;
+                    },
                 };
                 let Some(mut pending) = request else {
                     return Ok(());

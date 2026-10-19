@@ -43,7 +43,11 @@ incomplete.
 Outbound transaction submission shares the exclusive owner, bounds canonical
 serialization and weight before outbound allocation, and caps sequential attempts,
 received/sent wire reservations, handshake messages and absolute deadlines. No
-mempool, persistent retry queue or automatic rebroadcast is implemented.
+validated mempool, persistent retry queue or automatic rebroadcast is implemented.
+Explicit observation mode separately bounds pending identities, expiry/LRU indexes,
+source groups, checksum-protected inventory staging/inbox traffic, recent selected-body
+fingerprints, background downloads and concurrent RPC snapshots. It uses the
+existing exclusive body decoder and socket cap; default operation is unchanged.
 The optional loopback RPC transport bounds accepted sockets, HTTP framing, JSON
 complexity, request/response bytes, pending work and operation deadlines. Cheap
 reads take priority between network operations, while scheduled sync visits

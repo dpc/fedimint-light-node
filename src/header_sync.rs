@@ -52,6 +52,12 @@ pub struct HeaderSync {
     stopped: bool,
     /// Operator fee information, independent of selected headers and persistence.
     fee_policy: FeePolicy,
+    /// Optional in-memory unvalidated transaction observations.
+    mempool: Option<crate::mempool_observation::MempoolObservation>,
+    /// Fixed-minute background coverage reservation window.
+    coverage_window: tokio::time::Instant,
+    /// Background receive allowance; whole attempts reserved even on cancellation.
+    coverage_bytes: usize,
 }
 
 /// Selected state, not a freshness claim or a consensus-valid chain guarantee.
@@ -102,17 +108,154 @@ pub enum VisitEnd {
 impl HeaderSync {
     /// Take ownership of caller-initialized state and validate all budgets.
     pub fn new(store: ValidatedHeaderStore, config: SyncConfig) -> Result<Self, SyncError> {
+        Self::new_with_mempool(store, config, false)
+    }
+
+    /// Explicitly opt into legacy transaction observation and bounded body coverage.
+    ///
+    /// This does not validate a mempool or persist transactions. The caller must
+    /// drive `cover_mempool` between higher-priority work; RPC serving does so.
+    pub fn new_with_mempool(
+        store: ValidatedHeaderStore,
+        config: SyncConfig,
+        enabled: bool,
+    ) -> Result<Self, SyncError> {
         if !config.validate(store.capacity()) {
             return Err(SyncError::Configuration);
         }
+        let mut pool = PeerPool::new(&config.peers, config.peer_pool.clone())?;
+        if enabled {
+            pool.inbox = Some(crate::inventory_observer::InventoryInbox::new());
+        }
         Ok(Self {
-            pool: PeerPool::new(&config.peers, config.peer_pool.clone())?,
+            pool,
             store,
             config,
             generation: 0,
             stopped: false,
             fee_policy: FeePolicy::default(),
+            mempool: enabled.then(crate::mempool_observation::MempoolObservation::new),
+            coverage_window: tokio::time::Instant::now(),
+            coverage_bytes: 8 * 1024 * 1024,
         })
+    }
+
+    /// Whether observation and its additional network traffic were explicitly enabled.
+    pub fn mempool_enabled(&self) -> bool {
+        self.mempool.is_some()
+    }
+
+    /// Reconcile current full selected identities before consuming socket observations.
+    fn refresh_mempool(&mut self) -> Result<(), StoreError> {
+        if self.mempool.is_none() {
+            return Ok(());
+        }
+        let result = (|| {
+            let (floor, tip) = self.store.bounds()?;
+            (floor.max(tip.saturating_sub(19))..=tip)
+                .rev()
+                .map(|height| Ok((height, self.store.header(height)?.block_hash())))
+                .collect::<Result<Vec<_>, StoreError>>()
+        })();
+        let selected = result.inspect_err(|_| self.stopped = true)?;
+        let cache = self.mempool.as_mut().expect("enabled");
+        cache.reconcile(selected);
+        let now = tokio::time::Instant::now();
+        cache.expire(now);
+        let mut inbox = self
+            .pool
+            .inbox
+            .as_ref()
+            .expect("enabled")
+            .lock()
+            .expect("no panicking inbox owner");
+        for (txid, source) in inbox.queue.drain(..) {
+            cache.observe(txid, source, now);
+        }
+        Ok(())
+    }
+
+    /// Return an approximate snapshot, or None when disabled; reads never refresh TTL.
+    pub fn mempool_snapshot(&mut self) -> Result<Option<Vec<bitcoin::Txid>>, StoreError> {
+        self.refresh_mempool()?;
+        Ok(self.mempool.as_ref().map(|cache| cache.snapshot()))
+    }
+
+    /// Report native approximate-view coverage and bounded-state losses.
+    pub fn mempool_status(
+        &mut self,
+    ) -> Result<Option<crate::mempool_observation::MempoolObservationStatus>, StoreError> {
+        self.refresh_mempool()?;
+        Ok(self.mempool.as_ref().map(|cache| {
+            let inbox = self
+                .pool
+                .inbox
+                .as_ref()
+                .expect("enabled")
+                .lock()
+                .expect("no panicking inbox owner");
+            let mut status = cache.status();
+            status.inventory_dropped = inbox.dropped;
+            status
+        }))
+    }
+
+    /// Attempt one newest-missing selected body, with no retained body cache.
+    ///
+    /// Reserve 4 MiB from an 8 MiB/minute allowance before any await, including
+    /// failed/canceled attempts. Inventory has its separate aggregate allowance.
+    /// Missing/invalid remote bodies are transient; local storage failures stop
+    /// the owner under the normal policy. Dropping this future closes its lease.
+    pub async fn cover_mempool(&mut self) -> Result<(), BlockDownloadError> {
+        self.cover_mempool_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+            .await
+    }
+
+    /// Reserve only when the owner's actual remaining slice permits useful work.
+    pub(crate) async fn cover_mempool_until(
+        &mut self,
+        deadline: tokio::time::Instant,
+    ) -> Result<(), BlockDownloadError> {
+        self.refresh_mempool()?;
+        let Some((height, hash)) = self.mempool.as_ref().and_then(|cache| cache.missing()) else {
+            return Ok(());
+        };
+        let remaining = deadline
+            .saturating_duration_since(tokio::time::Instant::now())
+            .min(std::time::Duration::from_secs(5));
+        if remaining < std::time::Duration::from_millis(250) {
+            return Ok(());
+        }
+        if self.coverage_window.elapsed() >= std::time::Duration::from_secs(60) {
+            self.coverage_window = tokio::time::Instant::now();
+            self.coverage_bytes = 8 * 1024 * 1024;
+        }
+        const RESERVATION: usize = 4 * 1024 * 1024;
+        if self.coverage_bytes < RESERVATION {
+            return Ok(());
+        }
+        self.coverage_bytes -= RESERVATION;
+        let result = self
+            .fetch_block(
+                height,
+                hash,
+                BlockDownloadConfig {
+                    max_attempts: 1,
+                    total_timeout: remaining,
+                    visit_timeout: remaining,
+                    max_received_bytes: RESERVATION,
+                    decode: crate::block_decode::BlockDecodeLimits {
+                        max_payload_bytes: 4_000_000,
+                        max_elements: 1_000_000,
+                    },
+                },
+            )
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(error) if self.stopped => Err(error),
+            Err(_) => Ok(()),
+        }
     }
 
     /// Set explicit fee information; positive fixed rates are enforced by the type.
@@ -301,7 +444,7 @@ impl HeaderSync {
                 BlockDownloadError::Store(error)
             })?
             .1;
-        download(
+        let block = download(
             &mut self.pool,
             self.config.retry_delay,
             tip_height,
@@ -309,7 +452,12 @@ impl HeaderSync {
             hash,
             config,
         )
-        .await
+        .await?;
+        self.refresh_mempool()?;
+        if let Some(cache) = &mut self.mempool {
+            cache.ingest(height, &block);
+        }
+        Ok(block)
     }
 
     /// Visit one peer with absolute exchange deadlines and bounded work.
@@ -507,3 +655,7 @@ async fn request(
     }
     Err(SyncError::Protocol("request message budget"))
 }
+
+#[cfg(test)]
+#[path = "header_sync_observation_tests.rs"]
+mod observation_tests;

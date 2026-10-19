@@ -71,6 +71,8 @@ pub(crate) struct PeerPool {
     next_seed_cycle: Instant,
     /// Cache failures are observable without becoming chain failures.
     cache_failed: bool,
+    /// Explicit observation opt-in, installed before dialing any sockets.
+    pub inbox: Option<Arc<Mutex<crate::inventory_observer::InventoryInbox>>>,
 }
 
 impl Drop for PeerPool {
@@ -117,6 +119,7 @@ impl PeerPool {
             seed: 0,
             next_seed_cycle: Instant::now(),
             cache_failed: false,
+            inbox: None,
         })
     }
 
@@ -252,7 +255,11 @@ impl PeerPool {
             let when = self.next_dial.max(Instant::now()) + pacing;
             self.next_dial = when;
             sleep_until(when).await;
-            let result = timeout(deadline, handshake_inner(addr, height, received, sent)).await;
+            let result = timeout(
+                deadline,
+                handshake_inner(addr, height, received, sent, self.inbox.is_some()),
+            )
+            .await;
             let (stream, version) = result
                 .map_err(|_| (Some(addr), SyncError::Timeout))?
                 .map_err(|e| (Some(addr), e))?;
@@ -266,6 +273,9 @@ impl PeerPool {
                 idle_window: Instant::now(),
                 idle_bytes: 256 * 1024,
                 idle_frames: 64,
+                observer: self.inbox.as_ref().map(|inbox| {
+                    crate::inventory_observer::InventoryObserver::new(inbox.clone(), group(addr))
+                }),
             });
         }
         if self.slots.is_empty() {

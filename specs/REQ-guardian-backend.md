@@ -9,6 +9,10 @@ are documented in the [RPC guide](../docs/guardian-rpc.md).
 Unauthenticated RPC is restricted to reads; transaction submission requires
 explicit authenticated configuration. Normal CLI startup opens or bootstraps
 unbound persistent state and serves local reads without setup commands.
+The requester additionally authorized default-off `--mempool` for best-effort
+general transaction observation, including recent block-content downloads rather
+than special-transaction tracking. `getrawmempool` without verbose metadata exposes that bounded
+unvalidated view, not consensus acceptance or Core mempool policy metadata.
 The library and CLI now support bounded caller-driven transaction submission;
 completed writes do not establish peer acceptance, propagation or confirmation.
 Cancellation can follow delivery; retry remains an explicit caller decision.

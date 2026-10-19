@@ -180,7 +180,6 @@ async fn run(
         if peer.idle_frames == 0 {
             return Err(SyncError::Protocol("idle frame rate"));
         }
-        peer.idle_frames -= 1;
         let reserved = budget
             .lock()
             .expect("no panicking budget owner")
@@ -190,6 +189,11 @@ async fn run(
             .await
             .map_err(|_| SyncError::Timeout)??;
         peer.idle_bytes -= reserved.bytes - remaining;
+        if reserved.bytes != remaining {
+            // Inventory has its own byte/frame rates; a successful inventory
+            // frame leaves the reserved control allowance untouched.
+            peer.idle_frames -= 1;
+        }
         {
             let mut shared = budget.lock().expect("no panicking budget owner");
             shared.refund(reserved, remaining);
