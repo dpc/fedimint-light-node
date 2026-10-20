@@ -1,12 +1,16 @@
 # Fedimint light node
 
-A **research project** exploring the lightest practical Bitcoin node for Fedimint
-guardians without ceding security to third-party backends.
+An exploration of how little CPU, memory, storage and bandwidth a Bitcoin data
+backend can use while meeting Fedimint's needs, without making a third-party
+service the authority on the chain.
 
-The idea is to give each guardian its own small Bitcoin backend: retain recent
-headers, follow the greatest cumulative valid-header proof of work observed, and
-download complete blocks only when needed. Avoiding a full historical database
-and UTXO set makes independently operated guardian backends much less demanding.
+The approach is to keep a bounded recent header history, validate proof of work
+and contextual header rules, follow the greatest cumulative work observed, and
+fetch complete blocks when needed for queries or mempool filtering. Bitcoin P2P
+supplies the data; periodic checks through independently operated public sources
+provide another way to find competing headers. The aim is a robust backend each
+guardian can operate with modest resources, without maintaining a full historical
+database or UTXO set.
 
 ## Try it
 
@@ -71,19 +75,20 @@ See the [observation limits](docs/guardian-rpc.md#approximate-mempool-observatio
 
 ## Why this fits Fedimint
 
-Fedimint already delays consumption of Bitcoin blocks behind the observed tip.
-That finality delay gives a guardian room to compare header chains before
-consuming blocks, while keeping a bounded recent window. External references
-establish an initial checkpoint; subsequent contextual header validation and
-cumulative work select its descendants. The goal is particularly useful in a
-BFT federation where each guardian runs its own backend and participates in
-federation consensus.
+Fedimint needs a narrow slice of Bitcoin data, and its finality delay leaves time
+to compare chains before consuming blocks. Guardians agree block counts through
+federation consensus, so misleading one guardian about the count is not enough
+to determine the federation's result: an attacker needs to mislead a consensus
+threshold. Guardians can use different backends and sources to reduce shared
+failure modes. They still fetch block bodies independently; consensus on a count
+is not agreement on a block hash or validation of its contents.
 
-The research goal is **not a claim of trust-free bootstrap or full Bitcoin
-validation**. The current bootstrap trusts agreement between HTTPS sources.
-Finality delay and BFT do not prove script or UTXO validity or eliminate
-correlated source failures and eclipse risk. Existing guardians agree block
-counts and independently fetch bodies, not an authenticated hash-chain vote.
+These properties motivate a smaller backend, not a replacement for Bitcoin's
+validation rules. The current bootstrap trusts agreement between HTTPS sources;
+later public-source headers must pass the same local checks as P2P headers.
+Neither header validation nor federation consensus checks Bitcoin scripts or
+UTXO validity, and shared source failures and eclipse attacks remain risks. See
+the [security boundaries](SECURITY.md) for the current trust model.
 
 ## What works today
 
