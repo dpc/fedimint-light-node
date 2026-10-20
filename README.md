@@ -56,6 +56,16 @@ An explicit fixed override takes precedence. Rates use integer sat/kvB internall
 and BTC/kvB on the RPC wire: 1 sat/vB is 1,000 sat/kvB or 0.00001000 BTC/kvB.
 See the [fee policy and qualification rules](docs/guardian-rpc.md#fee-policy-for-the-guardian-adapter).
 
+## Why this fits Fedimint
+
+Fedimint needs a narrow slice of Bitcoin data, and its finality delay leaves time
+to compare chains before consuming blocks. Guardians agree block counts through
+federation consensus, so misleading one guardian about the count is not enough
+to determine the federation's result: an attacker needs to mislead a consensus
+threshold. Guardians can use different backends and sources to reduce shared
+failure modes. They still fetch block bodies independently; consensus on a count
+is not agreement on a block hash or validation of its contents.
+
 ## Try it
 
 ```sh
@@ -123,16 +133,6 @@ bitcoin-cli -datadir=/tmp -conf=/dev/null -rpcconnect=127.0.0.1 -rpcport=18443 g
 The result includes missing-parent counts, coverage and sample-median bounds.
 See [fee observation semantics](docs/guardian-rpc.md#historical-fee-observations).
 
-## Why this fits Fedimint
-
-Fedimint needs a narrow slice of Bitcoin data, and its finality delay leaves time
-to compare chains before consuming blocks. Guardians agree block counts through
-federation consensus, so misleading one guardian about the count is not enough
-to determine the federation's result: an attacker needs to mislead a consensus
-threshold. Guardians can use different backends and sources to reduce shared
-failure modes. They still fetch block bodies independently; consensus on a count
-is not agreement on a block hash or validation of its contents.
-
 ## What works today
 
 The experimental Rust library and CLI support mainnet bootstrap, contextual
@@ -153,21 +153,22 @@ and automatic guardian commit coordination remain outside the current implementa
 
 ## How does this compare?
 
-The main difference is **what gets validated**, not just how much state is kept:
+The resource tradeoff is where state, traffic and processing live—not just the
+size of the local database:
 
-| Approach | Validation and tradeoff |
+| Approach | Storage, traffic and operating cost |
 |---|---|
-| **This project** | Trusted checkpoint, contextual descendant headers and complete-block integrity; bounded recent state, but no UTXO or script validation. |
-| **Pruned Bitcoin Core** | Full-node validation with old bodies discarded; retains chainstate and processes history. AssumeUTXO can make it usable earlier while historical validation runs in the background. |
-| **Kyoto / Neutrino** | Compact-filter light clients: header and inclusion checks, not full spend validation. Filters help skip irrelevant blocks, not blocks a guardian must consume in full. |
-| **Electrum / Esplora clients** | Indexed server queries, with proofs available depending on the protocol and client; availability and completeness still depend on the backend. Self-hosting moves that backend cost to the operator. |
-| **Floresta / utreexod** | Utreexo validators use authenticated UTXO proofs instead of a full local UTXO database. Validation work, proof availability and bootstrap configuration still matter. |
+| **This project** | Bounded recent headers and context, no UTXO database or persistent block-body cache. Startup synchronizes headers from a pinned checkpoint; complete blocks arrive on demand. Optional mempool observation adds bounded in-memory state and recent-body downloads. |
+| **Pruned Bitcoin Core** | Bounds retained block-body disk use, but keeps chainstate and a block index and still processes chain history. AssumeUTXO can shorten time to use, with background historical processing and extra transitional storage. |
+| **Kyoto / Neutrino** | Header and compact-filter traffic plus selective block downloads. Filtering saves body bandwidth when an application can skip blocks; it cannot remove downloads of complete blocks a guardian needs. |
+| **Electrum / Esplora clients** | A small client can query a remote indexed backend rather than maintain that index locally. The server's storage, processing and operating cost remain; self-hosting puts them back in the operator's budget. Complete-block retrieval still costs bandwidth. |
+| **Floresta / utreexod** | Compact accumulator state replaces a full local UTXO database, but headers, caches and block processing remain. Proof data adds traffic and processing; proof-serving infrastructure and bootstrap choices add operational complexity. |
 
-**Pruned Core is the full-validation baseline. Floresta is a promising research
-alternative** because its Rust components aim to reduce validation state rather
-than omit spend validation. We have not adopted it or established guardian
-compatibility. Finality delays and federation consensus do not supply the
-validation missing from our current node.
+Memory use includes more than retained chain state: database caches, peer queues
+and decoded blocks also matter. For this project, requested blocks still consume
+bandwidth and transient memory even though bodies are not stored, and optional
+mempool observation adds ongoing traffic. A small on-disk header store is not a
+process-memory bound or a complete deployment budget.
 
 See the [detailed comparison](docs/alternative-approaches.md) for primary sources
 checked on October 12, 2026, configuration caveats and resource tradeoffs. This
