@@ -4,13 +4,57 @@ An exploration of how little CPU, memory, storage and bandwidth a Bitcoin data
 backend can use while meeting Fedimint's needs, without making a third-party
 service the authority on the chain.
 
-The approach is to keep a bounded recent header history, validate proof of work
-and contextual header rules, follow the greatest cumulative work observed, and
-fetch complete blocks when needed for queries or mempool filtering. Bitcoin P2P
-supplies the data; periodic checks through independently operated public sources
-provide another way to find competing headers. The aim is a robust backend each
-guardian can operate with modest resources, without maintaining a full historical
-database or UTXO set.
+The aim is a robust backend each guardian can operate with modest resources,
+without maintaining a full historical database or UTXO set.
+
+## Reliability and trust
+
+### Bitcoin tip & block data
+
+We validate proof of work and contextual header rules locally, retain bounded
+recent ancestry, and select the greatest cumulative work observed. Bitcoin P2P
+provides headers and complete blocks. Checks of public Esplora sources on
+independently randomized schedules add another route to discover competing
+headers when peers withhold them. Those candidates pass the same validation and work selection;
+bounded ancestry limits how deep a competing branch we can connect. Downloaded
+bodies must match their headers and transaction Merkle and witness commitments.
+
+Initial bootstrap pins a checkpoint using agreement between configured HTTPS
+sources; subsequent runs preserve it. This combines a trusted starting point
+with local descendant-header and block-integrity checks, rather than full
+UTXO/script validation. See the [chain trust contract](specs/SPEC-chain-trust.md)
+and [header transport details](docs/guide.md#periodic-explorer-header-candidates).
+
+### The mempool
+
+Optional `--mempool` builds a bounded observed view from P2P transaction
+announcements. Unique address-prefix groups contribute sightings; repeated
+sightings from the same group cannot keep entries alive indefinitely.
+Idle/hard expiry and least-recently-used eviction bound retention. Background
+downloads cover the latest twenty retained selected blocks under a separate
+budget; keyed transaction fingerprints remove mined entries while bodies are
+discarded. Reorganizations reconcile that coverage against the selected chain.
+
+This provides a local view of peer announcements, with coverage and loss counters
+to explain gaps. Membership records observations, not spend validation or a
+transaction's fee. See the [mempool mechanics and bounds](docs/guardian-rpc.md#approximate-mempool-observation).
+
+### Fee estimation
+
+The same body downloads supply a fixed uniform sample of up to 128 non-coinbase
+transactions and a bounded recent-output amount cache. Fees resolve from input
+amounts and transaction sizes locally, with no fee-quote service, extra block
+requests or parent-transaction queries. Unresolved inputs stay in the sample;
+missing-input counts and median bounds expose their effect instead of replacing
+them with easier observations.
+
+With `--mempool`, `estimatesmartfee` uses the sample median's finite positive
+upper endpoint only when resolution checks pass and the sample matches the
+current selected tip and is under thirty minutes old. Otherwise it omits the
+rate. This is a historical-sample heuristic, not a confirmation-time prediction.
+An explicit fixed override takes precedence. Rates use integer sat/kvB internally
+and BTC/kvB on the RPC wire: 1 sat/vB is 1,000 sat/kvB or 0.00001000 BTC/kvB.
+See the [fee policy and qualification rules](docs/guardian-rpc.md#fee-policy-for-the-guardian-adapter).
 
 ## Try it
 
@@ -88,10 +132,6 @@ to determine the federation's result: an attacker needs to mislead a consensus
 threshold. Guardians can use different backends and sources to reduce shared
 failure modes. They still fetch block bodies independently; consensus on a count
 is not agreement on a block hash or validation of its contents.
-
-The current bootstrap uses agreement between HTTPS sources; later public-source
-headers pass the same local checks as P2P headers. See
-the [security boundaries](SECURITY.md) for the current trust model.
 
 ## What works today
 
