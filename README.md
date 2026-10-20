@@ -1,56 +1,56 @@
 # Fedimint light node
 
-An exploration of how little CPU, memory, storage and bandwidth a Bitcoin data
-backend can use while meeting Fedimint's needs, without making a third-party
-service the authority on the chain.
+We explore how little CPU, memory, storage and bandwidth a Bitcoin data backend
+can use while meeting Fedimint's needs, without making a third-party service the
+authority on the chain.
 
 The aim is a robust backend each guardian can operate with modest resources,
 without maintaining a full historical database or UTXO set.
 
 ## Reliability and trust
 
-### Bitcoin tip & block data
+### Bitcoin tip and block data
 
 We validate proof of work and contextual header rules locally, retain bounded
 recent ancestry, and select the greatest cumulative work observed. Bitcoin P2P
-provides headers and complete blocks. Checks of public Esplora sources on
-independently randomized schedules add another route to discover competing
-headers when peers withhold them. Those candidates pass the same validation and work selection;
-bounded ancestry limits how deep a competing branch we can connect. Downloaded
+provides headers and complete blocks. We also check public Esplora sources on
+independently randomized schedules to discover competing headers when peers
+withhold them. We apply the same validation and work selection to those candidates.
+Bounded ancestry limits how deep a competing branch we can connect. Downloaded
 bodies must match their headers and transaction Merkle and witness commitments.
 
-Initial bootstrap pins a checkpoint using agreement between configured HTTPS
-sources; subsequent runs preserve it. This combines a trusted starting point
-with local descendant-header and block-integrity checks, rather than full
+On initial bootstrap, we pin a checkpoint using agreement between configured HTTPS
+sources and preserve it on subsequent runs. We trust that starting point, then
+check descendant headers and block integrity locally. We do not perform full
 UTXO/script validation. See the [chain trust contract](specs/SPEC-chain-trust.md)
 and [header transport details](docs/guide.md#periodic-explorer-header-candidates).
 
 ### The mempool
 
-Optional `--mempool` builds a bounded observed view from P2P transaction
+With `--mempool`, we build a bounded observed view from P2P transaction
 announcements. Unique address-prefix groups contribute sightings; repeated
 sightings from the same group cannot keep entries alive indefinitely.
 Idle/hard expiry and least-recently-used eviction bound retention. Background
 downloads cover the latest twenty retained selected blocks under a separate
-budget; keyed transaction fingerprints remove mined entries while bodies are
-discarded. Reorganizations reconcile that coverage against the selected chain.
+budget. We discard the bodies and use keyed transaction fingerprints to remove
+mined entries. On reorganizations, we reconcile coverage against the selected chain.
 
-This provides a local view of peer announcements, with coverage and loss counters
+You get a local view of peer announcements, with coverage and loss counters
 to explain gaps. Membership records observations, not spend validation or a
 transaction's fee. See the [mempool mechanics and bounds](docs/guardian-rpc.md#approximate-mempool-observation).
 
 ### Fee estimation
 
 The same body downloads supply a fixed uniform sample of up to 128 non-coinbase
-transactions and a bounded recent-output amount cache. Fees resolve from input
-amounts and transaction sizes locally, with no fee-quote service, extra block
-requests or parent-transaction queries. Unresolved inputs stay in the sample;
-missing-input counts and median bounds expose their effect instead of replacing
-them with easier observations.
+transactions and a bounded recent-output amount cache. We calculate fees locally
+from input amounts and transaction sizes, with no fee-quote service, extra block
+requests or parent-transaction queries. Unresolved inputs stay in the sample
+instead of giving way to easier observations. Missing-input counts and median
+bounds expose their effect.
 
 With `--mempool`, `estimatesmartfee` uses the sample median's finite positive
-upper endpoint only when resolution checks pass and the sample matches the
-current selected tip and is under thirty minutes old. Otherwise it omits the
+upper endpoint only when resolution checks pass, the sample matches the current
+selected tip, and the sample is under thirty minutes old. Otherwise it omits the
 rate. This is a historical-sample heuristic, not a confirmation-time prediction.
 An explicit fixed override takes precedence. Rates use integer sat/kvB internally
 and BTC/kvB on the RPC wire: 1 sat/vB is 1,000 sat/kvB or 0.00001000 BTC/kvB.
@@ -58,7 +58,7 @@ See the [fee policy and qualification rules](docs/guardian-rpc.md#fee-policy-for
 
 ## Why this fits Fedimint
 
-Fedimint's guardian model makes a small Bitcoin backend especially useful:
+Fedimint's guardian model suits a small Bitcoin backend:
 
 * **Federation resilience.** Guardians establish Byzantine fault-tolerant (BFT)
   consensus on the chain progress they consume, using agreed block counts.
@@ -85,8 +85,8 @@ See the [guardian workload](docs/guide.md#guardian-workload) and
 cargo run
 ```
 
-No setup command or credentials file is needed. Normal startup creates persistent
-mainnet state on first use, then synchronizes headers and serves **read-only,
+You need no setup command or credentials file. On first use, normal startup creates
+persistent mainnet state, then synchronizes headers and serves **read-only,
 unauthenticated RPC on `127.0.0.1:18443`**. Later runs reopen that state; they never
 reset or bootstrap over an existing file. State lives at
 `$XDG_STATE_HOME/fedimint-light-node/chain.redb`, or
@@ -102,7 +102,7 @@ After the first bootstrap finishes, query from another terminal:
 bitcoin-cli -datadir=/tmp -conf=/dev/null -rpcconnect=127.0.0.1 -rpcport=18443 getblockcount
 ```
 
-No credentials or Bitcoin Core daemon are needed. The client options select an
+You need neither credentials nor a Bitcoin Core daemon. The client options select an
 existing directory and an empty configuration instead of your local Core setup;
 they do not create a Core database. Ctrl-C stops the node and preserves state.
 Initial bootstrap needs Internet HTTPS, DNS and outbound Bitcoin P2P access;
@@ -111,11 +111,11 @@ it can take minutes or fail when sources or peers are unavailable.
 Optional overrides: `cargo run -- --db /trusted/path/chain.redb`,
 `cargo run -- --rpc-bind 127.0.0.1:0` for an available port, or
 `cargo run -- --rpc-credentials /private/rpc.auth` for authentication.
-`cargo run -- --fake-bitcoind` additionally enables the explicitly synthetic
+`cargo run -- --fake-bitcoind` also enables the explicitly synthetic
 Core-status compatibility calls; they remain off by default. See the
 [RPC guide](docs/guardian-rpc.md) for curl queries, authentication, resource
 limits and explicit operational commands. With Nix, `nix run .` starts the same
-normal service, or use `nix develop -c cargo run`.
+service; you can also use `nix develop -c cargo run`.
 
 ### Optional approximate mempool
 
@@ -133,8 +133,7 @@ This default-off mode observes general transaction announcements, not a watch
 list. It also downloads recent selected block bodies under a background budget,
 keeps only keyed transaction fingerprints, and discards the bodies. The result
 starts empty and builds a bounded local sample. Diagnostics report coverage and
-losses.
-See the [observation limits](docs/guardian-rpc.md#approximate-mempool-observation).
+losses. See the [observation limits](docs/guardian-rpc.md#approximate-mempool-observation).
 
 The same mode reports **partial historical fee observations**, without fetching
 extra blocks or parent transactions:
@@ -148,8 +147,8 @@ See [fee observation semantics](docs/guardian-rpc.md#historical-fee-observations
 
 ## How does this compare?
 
-The resource tradeoff is where state, traffic and processing live—not just the
-size of the local database:
+Compare where each approach stores state, sends traffic and processes data,
+as well as the size of its local database:
 
 | Approach | Storage, traffic and operating cost |
 |---|---|
@@ -161,7 +160,7 @@ size of the local database:
 
 Memory use includes more than retained chain state: database caches, peer queues
 and decoded blocks also matter. For this project, requested blocks still consume
-bandwidth and transient memory even though bodies are not stored, and optional
+bandwidth and transient memory even though we do not store their bodies. Optional
 mempool observation adds ongoing traffic. A small on-disk header store is not a
 process-memory bound or a complete deployment budget.
 
@@ -172,8 +171,8 @@ is not a measured performance ranking.
 ## Explicit operations
 
 The quickstart above runs bootstrap, synchronization and read-only RPC for you.
-For manual control, you can run the individual operations instead. For example,
-with Nix installed:
+For manual control, run the individual operations instead. For example, with Nix
+installed:
 
 ```sh
 nix build
@@ -189,7 +188,7 @@ DB=./node-data/headers.redb
 ```
 
 The default network mode discovers peers and periodically checks public explorer
-header candidates; no hand-picked public IP is required. `--no-explorer-headers`
+header candidates; you do not need to hand-pick public IP addresses. `--no-explorer-headers`
 disables periodic explorer traffic without changing trusted initial bootstrap.
 To use only your own node, add `--manual-only --peer 127.0.0.1:8333` to network
 commands; this also suppresses default periodic explorers, but not initial
