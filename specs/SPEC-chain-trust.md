@@ -128,8 +128,10 @@ never be described as fully validated.
 Optional historical fee samples add checked amount arithmetic over already admitted
 selected bodies, not spend validation. Parent txids bind output amounts without
 proving unspentness or legal spending. Missing amounts must stay unknown; detected
-contradictions invalidate the observation. The native read-only view must not
-change fixed/unavailable fee policy or imply confirmation-target estimation.
+contradictions invalidate the observation. Explicit observed fee policy may use
+qualified current-tip samples without new network requests; fixed and unavailable
+policies remain authoritative. Current-member raw transaction reads must not add
+unconfirmed outputs to selected-body amount provenance or mutate chain protection.
 
 Bootstrap sources can agree on a bad anchor. PoW and local mechanical checks
 do not eliminate eclipse attacks or consensus-invalid high-work chains.

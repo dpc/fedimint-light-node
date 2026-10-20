@@ -3,7 +3,7 @@
 ## Status
 
 An optionally authenticated loopback RPC profile supports the pinned Fedimint bitcoind
-client's seven methods. Its Core-status compatibility requires explicit
+client's nine methods. Its Core-status compatibility requires explicit
 default-off `--fake-bitcoind`; the synthetic field inventory and wire dialect
 are documented in the [RPC guide](../docs/guardian-rpc.md).
 Unauthenticated RPC is restricted to reads; transaction submission requires
@@ -13,14 +13,17 @@ The requester additionally authorized default-off `--mempool` for best-effort
 general transaction observation, including recent block-content downloads rather
 than special-transaction tracking. `getrawmempool` without verbose metadata exposes that bounded
 unvalidated view, not consensus acceptance or Core mempool policy metadata.
+Current-member `getrawtransaction` supports walletv2's output scan through bounded
+maintained-peer retrieval, without an archive or transaction body cache.
 The library and CLI now support bounded caller-driven transaction submission;
 completed writes do not establish peer acceptance, propagation or confirmation.
 Cancellation can follow delivery; retry remains an explicit caller decision.
 The concrete owner also exposes checked selected count, pinned height-one identity,
 retained height-to-hash queries and unavailable synchronization progress. Reads and
-body retrieval do not protect history. Fee policy defaults to unavailable or is an
-explicit positive operator-supplied static rate in satoshis per 1,000 virtual bytes,
-not a network estimate. The embedding example demonstrates these operations;
+body retrieval do not protect history. Fee policy is unavailable, an explicit
+positive static rate, or a qualified observed rate in satoshis per 1,000 virtual
+bytes. CLI `--mempool` selects observed policy unless fixed fees override it.
+The embedding example demonstrates these operations;
 consumer database finality coordination and end-to-end guardian deployment remain absent.
 Explicit local guardian binding, hash-checked administrative protection and startup
 ancestry/range preflight now support manual operator checkpoints. Stopped-store
@@ -33,8 +36,9 @@ The requester targets guardians, not client history queries, and explicitly
 accepts PoW and mechanical validation without full consensus validation.
 The interoperability source is Fedimint's `IServerBitcoinRpc` in
 `fedimint-server-core/src/bitcoin_rpc.rs`.
-The bootstrap was checked against Fedimint commit
-`502b7ec7da37d231b21d5bce993e9b9a9e7b63a6`; integration must recheck that interface.
+The server trait and Core adapter were checked against Fedimint commit
+`60b0ceafb9e946207899f8d73b8c32a969505f3f`; the separate client-facing
+`IBitcoindRpc` history/proof interface is outside this scope.
 
 Return block count as selected tip height plus one; do not subtract wallet
 finality delay. The Core wire method returns height, since Fedimint adds one.

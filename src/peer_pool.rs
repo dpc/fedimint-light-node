@@ -18,6 +18,8 @@ use crate::sync_error::SyncError;
 struct Slot {
     /// Numeric dial target.
     addr: SocketAddr,
+    /// Handshake capabilities used to choose an existing transaction source.
+    services: bitcoin::p2p::ServiceFlags,
     /// Stable slots retain checked useful service; the last slot explores.
     stable: bool,
     /// Provisional/exploratory rotation deadline, deferred while leased.
@@ -360,12 +362,49 @@ impl PeerPool {
                 idle_bytes: 256 * 1024,
                 idle_frames: 64,
                 observer: self.inbox.as_ref().map(|inbox| {
-                    crate::inventory_observer::InventoryObserver::new(inbox.clone(), group(addr))
+                    crate::inventory_observer::InventoryObserver::new(inbox.clone(), addr)
                 }),
             });
         }
+        self.checkout(0, pacing, deadline).await
+    }
+
+    /// Lease a maintained witness peer without discovery, dialing or repeated visits.
+    #[allow(clippy::result_large_err)] // One bounded foreground error, never queued or replicated.
+    pub async fn acquire_transaction(
+        &mut self,
+        preferred: Option<SocketAddr>,
+        tried: &[SocketAddr],
+    ) -> Result<Option<PeerConnection>, (Option<SocketAddr>, SyncError)> {
+        self.prepared = None;
+        self.maintain().await;
+        let eligible = |slot: &Slot| {
+            !tried.contains(&slot.addr) && slot.services.has(bitcoin::p2p::ServiceFlags::WITNESS)
+        };
+        let index = self
+            .slots
+            .iter()
+            .position(|s| eligible(s) && Some(s.addr) == preferred)
+            .or_else(|| self.slots.iter().position(eligible));
+        match index {
+            Some(index) => self
+                .checkout(index, Duration::ZERO, Duration::from_secs(2))
+                .await
+                .map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Move the sole reader across a clean boundary, retaining canceled checkouts.
+    #[allow(clippy::result_large_err)] // Same exclusive foreground error as ordinary acquisition.
+    async fn checkout(
+        &mut self,
+        index: usize,
+        pacing: Duration,
+        deadline: Duration,
+    ) -> Result<PeerConnection, (Option<SocketAddr>, SyncError)> {
         // Release appends to the back, giving every live connection one turn.
-        let slot = self.slots.remove(0);
+        let slot = self.slots.remove(index);
         tracing::debug!(peer = %slot.addr, "reusing maintained peer");
         self.leased = Some(Lease {
             addr: slot.addr,
@@ -445,6 +484,7 @@ impl PeerPool {
         }
         self.slots.push(Slot {
             addr,
+            services: peer.services,
             stable,
             expires,
             idle: IdlePeer::start(peer, self.config.discovery, Arc::clone(&self.idle_budget)),

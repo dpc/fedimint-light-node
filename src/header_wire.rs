@@ -36,6 +36,8 @@ pub(crate) enum Message {
     Ignore,
     /// Body admitted only during an explicit block request.
     Block(V1BlockFrame, Vec<u8>),
+    /// Canonical decoding belongs to the one explicitly requested transaction exchange.
+    Transaction(Vec<u8>),
     /// A peer declined data; interpreted only during an explicit request.
     NotFound,
 }
@@ -88,6 +90,26 @@ pub(crate) async fn receive_observed(
     block_limits: Option<BlockDecodeLimits>,
     observer: Option<&mut crate::inventory_observer::InventoryObserver>,
 ) -> Result<Message, SyncError> {
+    receive_exchange(stream, remaining_bytes, block_limits, observer, None).await
+}
+
+/// Admit transaction frames only for a named request, charging every received byte.
+pub(crate) async fn receive_transaction(
+    stream: &mut TcpStream,
+    remaining_bytes: &mut usize,
+    txid: bitcoin::Txid,
+) -> Result<Message, SyncError> {
+    receive_exchange(stream, remaining_bytes, None, None, Some(txid)).await
+}
+
+/// Share envelope/checksum admission without enabling unsolicited transaction buffering.
+async fn receive_exchange(
+    stream: &mut TcpStream,
+    remaining_bytes: &mut usize,
+    block_limits: Option<BlockDecodeLimits>,
+    observer: Option<&mut crate::inventory_observer::InventoryObserver>,
+    transaction: Option<bitcoin::Txid>,
+) -> Result<Message, SyncError> {
     if *remaining_bytes < 24 {
         return Err(SyncError::Protocol("exchange byte budget"));
     }
@@ -123,6 +145,8 @@ pub(crate) async fn receive_observed(
         None
     };
     let (limit, buffered) = match command {
+        b"tx\0\0\0\0\0\0\0\0\0\0" if transaction.is_some() => (400_000, true),
+        b"notfound\0\0\0\0" if transaction.is_some() => (37, true),
         b"block\0\0\0\0\0\0\0" => (block_frame.expect("admitted block").payload_len(), true),
         b"version\0\0\0\0\0" => (350, true),
         b"headers\0\0\0\0\0" => (3 + MAX_HEADERS * 81, true),
@@ -141,6 +165,9 @@ pub(crate) async fn receive_observed(
         }
     };
     let len = u32::from_le_bytes(envelope[16..20].try_into().expect("fixed slice")) as usize;
+    if transaction.is_some() && command == b"tx\0\0\0\0\0\0\0\0\0\0" && len > limit {
+        return Err(SyncError::TransactionLimit);
+    }
     if len > limit || len > *remaining_bytes {
         return Err(SyncError::Protocol("frame or exchange byte budget"));
     }
@@ -169,6 +196,20 @@ pub(crate) async fn receive_observed(
         return Err(SyncError::Protocol("checksum"));
     }
     match command {
+        b"tx\0\0\0\0\0\0\0\0\0\0" if transaction.is_some() => Ok(Message::Transaction(payload)),
+        b"notfound\0\0\0\0" if transaction.is_some() => {
+            let txid = transaction.expect("requested");
+            if payload.len() != 37
+                || payload[0] != 1
+                || ![1, 0x4000_0001].contains(&u32::from_le_bytes(
+                    payload[1..5].try_into().expect("fixed type"),
+                ))
+                || payload[5..] != txid.to_byte_array()
+            {
+                return Err(SyncError::Protocol("transaction notfound identity"));
+            }
+            Ok(Message::NotFound)
+        }
         b"block\0\0\0\0\0\0\0" => Ok(Message::Block(
             block_frame.expect("admitted block"),
             payload,

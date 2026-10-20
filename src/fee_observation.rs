@@ -18,7 +18,7 @@ const MAX_SAMPLE: usize = 128;
 const MAX_INPUTS: usize = 4096;
 /// Bitcoin's amount bound; arithmetic here does not validate spends.
 const MAX_MONEY: u64 = 21_000_000 * 100_000_000;
-/// Presentation warning, not a consensus freshness rule.
+/// Maximum age for observed fee policy, measured from first inspection.
 const STALE_AGE: Duration = Duration::from_secs(30 * 60);
 
 /// Metadata only; no sampled transaction body is retained.
@@ -72,7 +72,7 @@ const _: () = assert!(
         + 20 * std::mem::size_of::<u64>()
         + MAX_INPUTS * (std::mem::size_of::<InputSlot>() + std::mem::size_of::<usize>())
         + MAX_SAMPLE
-            * (std::mem::size_of::<SampledTransaction>() + std::mem::size_of::<usize>() + 8)
+            * (std::mem::size_of::<SampledTransaction>() + std::mem::size_of::<usize>() + 16)
         + 64 * std::mem::size_of::<(u64, BlockHash)>()
         + std::mem::size_of::<FeeObservation>()
         + std::mem::size_of::<ActiveSample>()
@@ -117,6 +117,37 @@ fn output_sum(tx: &Transaction) -> Option<u64> {
 }
 
 impl ActiveSample {
+    /// Resolve exact ratios, retaining the fixed sample's unresolved membership.
+    fn rates(&self) -> (Vec<(u64, u64)>, usize) {
+        let mut rates = Vec::with_capacity(MAX_SAMPLE);
+        let mut invalid = 0;
+        for (owner, tx) in self.transactions.iter().enumerate() {
+            let mut sum = Some(0u64);
+            let mut missing = false;
+            for slot in self.slots.iter().filter(|s| s.owner == owner) {
+                if let Some(value) = slot.value {
+                    sum = sum
+                        .and_then(|sum| sum.checked_add(value))
+                        .filter(|sum| *sum <= MAX_MONEY);
+                } else {
+                    missing = true;
+                }
+            }
+            let bad = tx.invalid
+                || sum.is_none()
+                || tx.vsize == 0
+                || (!missing && !tx.budget && sum.is_some_and(|sum| sum < tx.output_sum));
+            invalid += usize::from(bad);
+            if !bad && !missing && !tx.budget {
+                rates.push((sum.expect("checked") - tx.output_sum, tx.vsize));
+            }
+        }
+        rates.sort_unstable_by(|&(a, b), &(c, d)| {
+            (u128::from(a) * u128::from(d)).cmp(&(u128::from(c) * u128::from(b)))
+        });
+        (rates, invalid)
+    }
+
     /// Select exactly once, without looking at resolution success.
     fn new(key: (u64, BlockHash), block: &Block, rng: &mut impl RngExt) -> Self {
         let mut sample = Self {
@@ -211,6 +242,25 @@ impl ActiveSample {
 }
 
 impl FeeObservation {
+    /// Read the exact finite upper endpoint without fetching or refreshing state.
+    pub fn sats_per_kvb(&self, now: Instant) -> Option<std::num::NonZeroU64> {
+        let sample = self.active.as_ref()?;
+        if self.selected.first() != Some(&sample.key)
+            || now.saturating_duration_since(sample.observed) >= STALE_AGE
+            || sample.transactions.is_empty()
+        {
+            return None;
+        }
+        let (rates, invalid) = sample.rates();
+        if invalid != 0
+            || !(rates.len() >= 32 || (sample.population < 32 && rates.len() == sample.population))
+        {
+            return None;
+        }
+        let &(fee, vsize) = rates.get(sample.transactions.len().div_ceil(2) - 1)?;
+        exact_sats_per_kvb(fee, vsize)
+    }
+
     /// No allocations for output records until an admitted body arrives.
     pub fn new() -> Self {
         Self {
@@ -291,46 +341,27 @@ impl FeeObservation {
     pub fn status(&self, now: Instant, complete: usize, target: usize) -> FeeObservationStatus {
         let active = self.active.as_ref();
         let tip = self.selected.first();
-        let mut rates = Vec::with_capacity(MAX_SAMPLE);
-        let mut invalid = 0;
+        let (rates, invalid) = active.map_or_else(|| (Vec::new(), 0), ActiveSample::rates);
         let mut budget = 0;
         let mut inputs = 0;
         let mut untracked = 0;
         if let Some(sample) = active {
-            for (owner, tx) in sample.transactions.iter().enumerate() {
+            for tx in &sample.transactions {
                 inputs += tx.inputs;
                 budget += usize::from(tx.budget);
                 if tx.budget {
                     untracked += tx.inputs;
                 }
-                let mut sum = Some(0u64);
-                let mut missing = false;
-                for slot in sample.slots.iter().filter(|s| s.owner == owner) {
-                    if let Some(value) = slot.value {
-                        sum = sum
-                            .and_then(|sum| sum.checked_add(value))
-                            .filter(|sum| *sum <= MAX_MONEY);
-                    } else {
-                        missing = true;
-                    }
-                }
-                let bad = tx.invalid
-                    || sum.is_none()
-                    || tx.vsize == 0
-                    || (!missing && !tx.budget && sum.is_some_and(|sum| sum < tx.output_sum));
-                invalid += usize::from(bad);
-                if !bad && !missing && !tx.budget {
-                    rates.push((sum.expect("checked") - tx.output_sum) as f64 / tx.vsize as f64);
-                }
             }
         }
-        rates.sort_unstable_by(f64::total_cmp);
+        let display = |index: usize| rates[index].0 as f64 / rates[index].1 as f64;
         let sampled = active.map_or(0, |s| s.transactions.len());
         let resolved = rates.len();
         let population = active.map_or(0, |s| s.population);
         let gate = invalid == 0 && (resolved >= 32 || (population < 32 && resolved == population));
         let quantile = |numerator: usize, denominator: usize| {
-            (gate && resolved > 0).then(|| rates[(resolved * numerator).div_ceil(denominator) - 1])
+            (gate && resolved > 0)
+                .then(|| display((resolved * numerator).div_ceil(denominator) - 1))
         };
         let rank = sampled.div_ceil(2);
         let bounds = sampled > 0 && invalid == 0;
@@ -339,10 +370,10 @@ impl FeeObservation {
             if rank <= missing {
                 0.0
             } else {
-                rates[rank - missing - 1]
+                display(rank - missing - 1)
             }
         });
-        let upper = (bounds && rank <= resolved).then(|| rates[rank - 1]);
+        let upper = (bounds && rank <= resolved).then(|| display(rank - 1));
         let known = active.map_or(0, |s| {
             s.slots.iter().filter(|slot| slot.value.is_some()).count()
         });
@@ -358,7 +389,9 @@ impl FeeObservation {
             blocks_behind_tip: lag,
             observed_at: active.map(|s| s.observed_at),
             age_seconds: age.map(|age| age.as_secs()),
-            stale: age.is_none_or(|age| age >= STALE_AGE) || lag != Some(0),
+            stale: age.is_none_or(|age| age >= STALE_AGE)
+                || lag != Some(0)
+                || active.map(|s| s.key.1) != tip.map(|key| key.1),
             non_coinbase_tx_count: population,
             sampled_tx_count: sampled,
             resolved_tx_count: resolved,
@@ -385,6 +418,17 @@ impl FeeObservation {
             body_coverage_target: target,
         }
     }
+}
+
+/// Round the selected exact ratio up once, before the BTC wire conversion.
+fn exact_sats_per_kvb(fee: u64, vsize: u64) -> Option<std::num::NonZeroU64> {
+    if vsize == 0 {
+        return None;
+    }
+    let value = u128::from(fee)
+        .checked_mul(1000)?
+        .div_ceil(u128::from(vsize));
+    std::num::NonZeroU64::new(u64::try_from(value).ok()?)
 }
 
 #[cfg(test)]

@@ -4,6 +4,9 @@ use crate::store_error::StoreError;
 /// A bounded peer failure or a terminal local/recovery error.
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
+    /// Explicit partial-view transaction size bound, before payload allocation.
+    #[error("transaction lookup admission limit")]
+    TransactionLimit,
     /// No eligible candidate or live connection is currently available.
     #[error("no eligible peers; discovery or retry backoff is pending")]
     NoPeers,

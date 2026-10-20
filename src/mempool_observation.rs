@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::BuildHasher;
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use bitcoin::{Block, BlockHash, Txid};
@@ -18,6 +19,8 @@ const HARD_AGE: Duration = Duration::from_secs(24 * 3600);
 
 /// Fixed-size source history; a group is an address prefix, not an operator.
 struct Observation {
+    /// Latest actual announcer, a routing hint only; replacement never renews age.
+    announcer: Option<SocketAddr>,
     /// First admission, never refreshed.
     first: Instant,
     /// Last previously unseen source, not last repeated message.
@@ -25,6 +28,9 @@ struct Observation {
     /// At most four source prefixes; saturation does not refresh timestamps.
     sources: [Option<u64>; 4],
 }
+
+// Routing adds one inline hint, never an endpoint collection or extra index.
+const _: () = assert!(std::mem::size_of::<Option<SocketAddr>>() <= 32);
 
 /// Native diagnostics, deliberately not a synthetic Core mempool schema.
 #[derive(Debug, Clone, Copy)]
@@ -72,6 +78,10 @@ pub(crate) struct MempoolObservation {
 }
 
 impl MempoolObservation {
+    /// Resolve observed policy using metadata only.
+    pub fn sats_per_kvb(&self) -> Option<std::num::NonZeroU64> {
+        self.fees.sats_per_kvb(Instant::now())
+    }
     /// Create an empty, unpersisted observation view.
     pub fn new() -> Self {
         Self {
@@ -132,12 +142,27 @@ impl MempoolObservation {
     }
 
     /// Admit one checksummed legacy txid announcement under fixed capacity.
+    #[cfg(test)]
     pub fn observe(&mut self, txid: Txid, source: u64, now: Instant) {
+        self.observe_from(txid, source, None, now);
+    }
+
+    /// Record one bounded endpoint alongside the unchanged source-group/TTL policy.
+    pub fn observe_from(
+        &mut self,
+        txid: Txid,
+        source: u64,
+        announcer: Option<SocketAddr>,
+        now: Instant,
+    ) {
         self.expire(now);
         if self.suppressed(txid) {
             return;
         }
         if let Some(entry) = self.pending.get_mut(&txid) {
+            if announcer.is_some() {
+                entry.announcer = announcer;
+            }
             if !entry.sources.contains(&Some(source))
                 && let Some(slot) = entry.sources.iter_mut().find(|slot| slot.is_none())
             {
@@ -156,6 +181,7 @@ impl MempoolObservation {
         self.pending.insert(
             txid,
             Observation {
+                announcer,
                 first: now,
                 last: now,
                 sources: [Some(source), None, None, None],
@@ -163,6 +189,11 @@ impl MempoolObservation {
         );
         self.idle.insert((now, txid));
         self.age.insert((now, txid));
+    }
+
+    /// Distinguish absent membership from a member without an endpoint hint.
+    pub fn announcer(&self, txid: bitcoin::Txid) -> Option<Option<SocketAddr>> {
+        self.pending.get(&txid).map(|entry| entry.announcer)
     }
 
     /// Extract fingerprints and fee metadata only from an admitted selected body.

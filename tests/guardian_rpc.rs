@@ -101,7 +101,18 @@ async fn mempool_loopback_inventory_rpc_and_autonomous_selected_body_exclusion()
     let counted_requests = body_requests.clone();
     let block = genesis_block(Network::Bitcoin);
     let confirmed = block.txdata[0].compute_txid();
-    let pending = bitcoin::Txid::from_byte_array([7; 32]);
+    let mut transaction = block.txdata[0].clone();
+    transaction.input[0].previous_output =
+        bitcoin::OutPoint::new(bitcoin::Txid::from_byte_array([7; 32]), 0);
+    transaction.input[0].witness = bitcoin::Witness::from_slice(&[vec![1, 2, 3]]);
+    let pending = transaction.compute_txid();
+    assert_ne!(
+        pending.to_byte_array(),
+        transaction.compute_wtxid().to_byte_array()
+    );
+    let expected_transaction = transaction.clone();
+    let tx_requests = Arc::new(AtomicUsize::new(0));
+    let counted_transactions = tx_requests.clone();
     let server = tokio::spawn(async move {
         loop {
             let (mut stream, addr) = listener.accept().await.unwrap();
@@ -145,6 +156,11 @@ async fn mempool_loopback_inventory_rpc_and_autonomous_selected_body_exclusion()
                         .await;
                     }
                     NetworkMessage::GetData(items) => {
+                        if items == vec![Inventory::WitnessTransaction(pending)] {
+                            counted_transactions.fetch_add(1, Ordering::SeqCst);
+                            p2p_send(&mut stream, NetworkMessage::Tx(transaction.clone())).await;
+                            continue;
+                        }
                         counted_requests.fetch_add(1, Ordering::SeqCst);
                         assert_eq!(items, vec![Inventory::WitnessBlock(block.block_hash())]);
                         if serve_body.load(Ordering::SeqCst) {
@@ -221,6 +237,17 @@ async fn mempool_loopback_inventory_rpc_and_autonomous_selected_body_exclusion()
     // Leave a full idle slice. Polling itself deliberately cancels coverage, and
     // an initial NotFound can defer the next body attempt until the next header.
     tokio::time::sleep(Duration::from_secs(7)).await;
+    tokio::task::spawn_blocking(move || {
+        let rpc = Client::new(&format!("http://{addr}"), Auth::None).unwrap();
+        assert!(rpc.get_raw_mempool().unwrap().contains(&pending));
+        assert_eq!(
+            rpc.get_raw_transaction(&pending, None).unwrap(),
+            expected_transaction
+        );
+    })
+    .await
+    .unwrap();
+    assert_eq!(tx_requests.load(Ordering::SeqCst), 1);
     assert_eq!(
         query(addr, json!([false])).await["result"],
         json!([pending.to_string()])
@@ -243,9 +270,42 @@ async fn mempool_loopback_inventory_rpc_and_autonomous_selected_body_exclusion()
         }
     }
     assert_eq!(body_requests.load(Ordering::SeqCst), count);
+    let missing = bitcoin::Txid::from_byte_array([8; 32]);
+    assert_eq!(
+        query_method(
+            addr,
+            "getrawtransaction",
+            json!([missing.to_string(), false])
+        )
+        .await["error"]["code"],
+        -5
+    );
+    assert_eq!(
+        query_method(
+            addr,
+            "getrawtransaction",
+            json!([confirmed.to_string(), false])
+        )
+        .await["error"]["code"],
+        -5
+    );
+    assert_eq!(
+        query_method(addr, "getrawtransaction", json!([pending.to_string(), 0])).await["error"]["code"],
+        -32602
+    );
+    assert_eq!(
+        query_method(
+            addr,
+            "getrawtransaction",
+            json!([pending.to_string(), true])
+        )
+        .await["error"]["code"],
+        -32602
+    );
+    assert_eq!(tx_requests.load(Ordering::SeqCst), 1);
     let fixed_policy = query_method(addr, "estimatesmartfee", json!([1, "CONSERVATIVE"])).await;
     assert!(fixed_policy["result"]["feerate"].is_null());
-    assert!(fixed_policy["result"]["errors"].is_array());
+    assert_eq!(fixed_policy["result"], json!({"blocks": 1}));
     assert_eq!(
         query_method(addr, "getfeeobservations", json!([false])).await["error"]["code"],
         -32602
@@ -393,6 +453,59 @@ async fn pinned_guardian_client_status_fee_height_identity_and_no_protection() {
 }
 
 #[tokio::test]
+async fn pinned_server_monitor_sequence_keeps_status_with_some_or_missing_fee() {
+    for rate in [
+        None,
+        Some(1),
+        Some(999),
+        Some(1000),
+        Some(1001),
+        Some(100_000_001),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let sync = service_observation(
+            &dir.path().join("chain"),
+            "127.0.0.1:1".parse().unwrap(),
+            rate.map_or(FeePolicy::Observed, |rate| FeePolicy::Fixed {
+                sats_per_kvb: rate.try_into().unwrap(),
+            }),
+            8,
+            true,
+        );
+        let expected = sync.status().unwrap();
+        let identity = sync.chain_id();
+        let (addr, stop, task) = start(sync, true, false).await;
+        tokio::task::spawn_blocking(move || {
+            let rpc = client(addr);
+            // Mirror IServerBitcoinRpc's Core adapter and the monitor's call order.
+            assert_eq!(rpc.get_block_hash(1).unwrap(), identity);
+            assert_eq!(rpc.get_block_count().unwrap() + 1, 9);
+            let info = rpc.get_blockchain_info().unwrap();
+            assert_eq!(info.best_block_hash, expected.hash);
+            assert_eq!(info.chain, Network::Bitcoin);
+            assert!(!info.initial_block_download);
+            let estimate = rpc
+                .estimate_smart_fee(1, Some(bitcoincore_rpc::json::EstimateMode::Conservative))
+                .unwrap();
+            assert_eq!(estimate.fee_rate.map(bitcoin::Amount::to_sat), rate);
+            assert!(estimate.errors.is_none());
+            assert_eq!(estimate.blocks, 1);
+            if rate.is_none() {
+                assert_eq!(
+                    rpc.call::<Value>("estimatesmartfee", &[json!(1), json!("CONSERVATIVE")])
+                        .unwrap(),
+                    json!({"blocks": 1})
+                );
+            }
+        })
+        .await
+        .unwrap();
+        stop.send(()).unwrap();
+        task.await.unwrap().unwrap();
+    }
+}
+
+#[tokio::test]
 async fn default_off_and_strict_json_dialect() {
     let dir = tempfile::tempdir().unwrap();
     let (addr, stop, task) = start(
@@ -430,7 +543,7 @@ async fn default_off_and_strict_json_dialect() {
             .estimate_smart_fee(1, Some(bitcoincore_rpc::json::EstimateMode::Conservative))
             .unwrap();
         assert!(fee.fee_rate.is_none());
-        assert!(fee.errors.is_some());
+        assert!(fee.errors.is_none());
         assert!(
             rpc.call::<Value>("sendrawtransaction", &[json!("00")])
                 .unwrap_err()

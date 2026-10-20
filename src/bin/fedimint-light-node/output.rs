@@ -15,6 +15,7 @@ pub fn fee_policy(policy: FeePolicy) -> Result<()> {
     let mut out = io::stdout().lock();
     match policy {
         FeePolicy::Unavailable => {}
+        FeePolicy::Observed => tracing::info!(fee_policy = "observed", "fee policy configured"),
         FeePolicy::Fixed { sats_per_kvb } => {
             writeln!(out, "fee_policy=fixed-operator-supplied")?;
             writeln!(out, "fee_sats_per_kvb={sats_per_kvb}")?;

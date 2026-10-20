@@ -68,6 +68,178 @@ async fn acquire(pool: &mut PeerPool) -> PeerConnection {
 }
 
 #[tokio::test]
+async fn transaction_lookup_prefers_announcer_then_existing_alternate_without_dials_or_credit() {
+    use bitcoin::p2p::message_blockdata::Inventory;
+    let tx = bitcoin::blockdata::constants::genesis_block(Network::Bitcoin)
+        .txdata
+        .remove(0);
+    let txid = tx.compute_txid();
+    let first = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let second = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let a = first.local_addr().unwrap();
+    let b = second.local_addr().unwrap();
+    let mut pool = PeerPool::new(&[a, b], PeerPoolConfig::manual_only()).unwrap();
+    let serving_a = tokio::spawn(server(first));
+    let serving_b = tokio::spawn(server(second));
+    let peer = acquire(&mut pool).await;
+    pool.release(peer, false);
+    let peer = acquire(&mut pool).await;
+    pool.release(peer, false);
+    let mut remote_a = serving_a.await.unwrap();
+    let mut remote_b = serving_b.await.unwrap();
+    let serve = async {
+        // Prefer b even though a occupies the first slot. A is visited only after notfound.
+        assert_eq!(
+            read(&mut remote_b).await,
+            NetworkMessage::GetData(vec![Inventory::WitnessTransaction(txid)])
+        );
+        send(
+            &mut remote_b,
+            NetworkMessage::NotFound(vec![Inventory::Transaction(txid)]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            read(&mut remote_a).await,
+            NetworkMessage::GetData(vec![Inventory::WitnessTransaction(txid)])
+        );
+        send(&mut remote_a, NetworkMessage::Tx(tx.clone()))
+            .await
+            .unwrap();
+    };
+    let (result, ()) = tokio::join!(
+        crate::transaction_download::download(&mut pool, txid, Some(b)),
+        serve
+    );
+    assert_eq!(result.unwrap(), Some(tx));
+    assert_eq!(pool.slots.len(), 2);
+    assert!(pool.book.entries.iter().all(|e| e.useful.is_none()));
+    assert!(pool.leased.is_none());
+    pool.shutdown().await;
+
+    // Known dialable candidates are not connections: an on-demand read must not dial.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut pool = PeerPool::new(&[addr], PeerPoolConfig::manual_only()).unwrap();
+    assert!(
+        crate::transaction_download::download(&mut pool, txid, Some(addr))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        timeout(Duration::from_millis(20), listener.accept())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn transaction_lookup_cancellation_closes_partial_lease_and_never_redials() {
+    use bitcoin::p2p::message_blockdata::Inventory;
+    let tx = bitcoin::blockdata::constants::genesis_block(Network::Bitcoin)
+        .txdata
+        .remove(0);
+    let txid = tx.compute_txid();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut pool = PeerPool::new(&[addr], PeerPoolConfig::manual_only()).unwrap();
+    let serving = tokio::spawn(server(listener));
+    let peer = acquire(&mut pool).await;
+    pool.release(peer, false);
+    let mut remote = serving.await.unwrap();
+    let result = {
+        let request = crate::transaction_download::download(&mut pool, txid, Some(addr));
+        tokio::pin!(request);
+        tokio::select! {
+            value = &mut request => panic!("early result {value:?}"),
+            _ = async {
+                assert_eq!(read(&mut remote).await, NetworkMessage::GetData(vec![Inventory::WitnessTransaction(txid)]));
+                let frame = serialize(&RawNetworkMessage::new(Network::Bitcoin.magic(), NetworkMessage::Tx(tx)));
+                remote.write_all(&frame[..25]).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            } => true,
+        }
+    };
+    assert!(result);
+    assert!(pool.slots.is_empty());
+    assert!(
+        timeout(Duration::from_secs(1), remote.read_u8())
+            .await
+            .unwrap()
+            .is_err()
+    );
+    assert!(
+        crate::transaction_download::download(&mut pool, txid, Some(addr))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(pool.book.entries.iter().all(|e| e.useful.is_none()));
+    pool.shutdown().await;
+}
+
+#[tokio::test]
+async fn transaction_lookup_distinguishes_absence_limits_and_transport_failure() {
+    use bitcoin::p2p::message_blockdata::Inventory;
+    let tx = bitcoin::blockdata::constants::genesis_block(Network::Bitcoin)
+        .txdata
+        .remove(0);
+    let txid = tx.compute_txid();
+    for case in ["notfound", "limit", "corrupt", "timeout"] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut pool = PeerPool::new(&[addr], PeerPoolConfig::manual_only()).unwrap();
+        let serving = tokio::spawn(server(listener));
+        let peer = acquire(&mut pool).await;
+        pool.release(peer, false);
+        let mut remote = serving.await.unwrap();
+        let serve = async {
+            assert_eq!(
+                read(&mut remote).await,
+                NetworkMessage::GetData(vec![Inventory::WitnessTransaction(txid)])
+            );
+            match case {
+                "notfound" => send(
+                    &mut remote,
+                    NetworkMessage::NotFound(vec![Inventory::Transaction(txid)]),
+                )
+                .await
+                .unwrap(),
+                "timeout" => (),
+                _ => {
+                    let mut frame = serialize(&RawNetworkMessage::new(
+                        Network::Bitcoin.magic(),
+                        NetworkMessage::Tx(tx.clone()),
+                    ));
+                    if case == "limit" {
+                        frame.truncate(24);
+                        frame[16..20].copy_from_slice(&400_001u32.to_le_bytes());
+                    } else {
+                        frame[20] ^= 1;
+                    }
+                    remote.write_all(&frame).await.unwrap();
+                }
+            }
+        };
+        let (result, ()) = tokio::join!(
+            crate::transaction_download::download(&mut pool, txid, Some(addr)),
+            serve
+        );
+        match case {
+            "notfound" | "limit" => assert!(result.unwrap().is_none()),
+            _ => assert!(matches!(
+                result,
+                Err(crate::block_download_error::BlockDownloadError::Unavailable { .. })
+            )),
+        }
+        assert_eq!(pool.slots.len(), usize::from(case == "notfound"));
+        assert!(pool.book.entries.iter().all(|e| e.useful.is_none()));
+        pool.shutdown().await;
+    }
+}
+
+#[tokio::test]
 async fn time_rejection_preserves_prior_strikes_retry_and_nonuseful_status() {
     for prior in [0, 2, u8::MAX] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

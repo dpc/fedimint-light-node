@@ -13,7 +13,7 @@ async fn receive(payload: Vec<u8>, corrupt: bool, inbox: Arc<Mutex<InventoryInbo
         .await
         .unwrap();
     let (mut server, _) = listener.accept().await.unwrap();
-    let mut observer = InventoryObserver::new(inbox, 7);
+    let mut observer = InventoryObserver::new(inbox, "127.0.0.7:8333".parse().unwrap());
     let mut checksum = sha256d::Hash::hash(&payload)[..4].to_vec();
     if corrupt {
         checksum[0] ^= 1;
@@ -56,7 +56,11 @@ async fn checksum_commit_and_exact_txid_type() {
             .iter()
             .copied()
             .collect::<Vec<_>>(),
-        vec![(txid, 7)]
+        vec![(
+            txid,
+            crate::peer_address::group("127.0.0.7:8333".parse().unwrap()),
+            "127.0.0.7:8333".parse().unwrap()
+        )]
     );
 }
 
@@ -88,10 +92,10 @@ async fn bounded_staging_inbox_and_aggregate_storm_accounting() {
         assert_eq!(state.queue.len(), INBOX);
         assert_eq!(state.dropped, 12_000 - INBOX as u64);
     }
-    let mut observer = InventoryObserver::new(inbox.clone(), 3);
+    let mut observer = InventoryObserver::new(inbox.clone(), "127.0.0.3:8333".parse().unwrap());
     assert!(observer.reserve(2 * 1024 * 1024).is_ok());
     assert!(observer.reserve(1).is_err());
-    let mut other = InventoryObserver::new(inbox.clone(), 4);
+    let mut other = InventoryObserver::new(inbox.clone(), "127.0.0.4:8333".parse().unwrap());
     inbox.lock().unwrap().bytes = 0;
     assert!(other.reserve(1).is_err());
 }
@@ -99,7 +103,7 @@ async fn bounded_staging_inbox_and_aggregate_storm_accounting() {
 #[tokio::test(start_paused = true)]
 async fn rate_windows_refresh_without_refunding_failed_frames() {
     let inbox = InventoryInbox::new();
-    let mut observer = InventoryObserver::new(inbox.clone(), 3);
+    let mut observer = InventoryObserver::new(inbox.clone(), "127.0.0.3:8333".parse().unwrap());
     observer.reserve(2 * 1024 * 1024).unwrap();
     assert!(observer.reserve(1).is_err());
     tokio::time::advance(Duration::from_secs(60)).await;

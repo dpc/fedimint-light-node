@@ -1,15 +1,16 @@
 use std::num::NonZeroU64;
 
-/// Caller-selected fee information, never a network estimate or confirmation promise.
+/// Caller-selected source of fee information.
 ///
 /// This policy is not persisted: supply it on each service construction. It does
-/// not inspect transaction fees or alter submission admission. There is no validated mempool,
-/// input-value lookup, HTTP fee service, or adaptive default.
+/// not alter submission admission or trigger network requests.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum FeePolicy {
     /// No fee information is available.
     #[default]
     Unavailable,
+    /// Use the qualified fixed historical sample's finite median upper endpoint.
+    Observed,
     /// A positive operator-supplied static rate, not an observed network rate.
     Fixed {
         /// Satoshis per 1,000 virtual bytes, NOT sat/vB or sat/kwu.
@@ -18,12 +19,12 @@ pub enum FeePolicy {
 }
 
 impl FeePolicy {
-    /// Return the configured rate unchanged, or no information by default.
+    /// Return only the configured fixed rate; HeaderSync resolves observed policy.
     ///
     /// No unit conversion or multiplication is performed, including at `u64::MAX`.
     pub fn sats_per_kvb(self) -> Option<NonZeroU64> {
         match self {
-            Self::Unavailable => None,
+            Self::Unavailable | Self::Observed => None,
             Self::Fixed { sats_per_kvb } => Some(sats_per_kvb),
         }
     }

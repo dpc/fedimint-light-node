@@ -81,6 +81,9 @@ recent selected bodies under separate background budgets. This is an unvalidated
 in-memory observation cache, not transaction acceptance. Checksum-protected inventory
 still contains arbitrary peer claims; keyed fingerprints can falsely suppress
 entries. Reorganizations invalidate coverage without resurrecting removed entries.
+Current-member raw transaction reads use only maintained witness peers, bounded
+exchanges and full txid verification. They retain no body or selected-chain amount
+provenance, add no sockets and grant no useful header/block service credit.
 The [RPC guide](docs/guardian-rpc.md#approximate-mempool-observation) documents
 independent inventory, staging, cache, coverage and response-copy bounds.
 No-auth reads remain independent of the authenticated submission boundary.
@@ -88,11 +91,12 @@ The same opt-in mode derives historical fee samples from already admitted bodies
 without any new network requests. Full txids bind cached output amounts, but do
 not establish input unspentness, scripts, legal spends or consensus validity.
 Partial parent resolution can strongly bias subset quantiles; conservative bounds
-describe only the fixed sample, not confirmation likelihood. These observations
-never alter fixed/unavailable fee policy. Full-hash reconciliation invalidates
+describe only the fixed sample, not confirmation likelihood. Explicit observed fee
+policy uses the qualified finite upper endpoint; fixed and unavailable modes remain
+authoritative. Full-hash reconciliation invalidates
 disconnected amount provenance; restart loses the cache. The
 [fee observation contract](docs/guardian-rpc.md#historical-fee-observations) documents
-the separate 16 MiB logical allocation cap, input-slot limits and stale warnings.
+the separate 16 MiB logical allocation cap, input-slot limits and freshness gate.
 Synchronous bounded hashing, validation and durable publication
 between awaits cannot be interrupted. A dedicated caller-owned runtime thread
 can keep that work off latency-sensitive threads.

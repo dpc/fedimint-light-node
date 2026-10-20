@@ -1,10 +1,11 @@
 # Local RPC and guardian compatibility
 
-`serve` synchronizes headers while exposing **seven guardian compatibility methods**,
-plus an explicitly enabled approximate transaction-observation query.
-The compatibility target is Fedimint
-`502b7ec7da37d231b21d5bce993e9b9a9e7b63a6`, using `bitcoincore-rpc` 0.19.0 and
+`serve` synchronizes headers while exposing **nine guardian compatibility methods**.
+The compatibility target is Fedimint's `IServerBitcoinRpc` and its Core adapter at
+`60b0ceafb9e946207899f8d73b8c32a969505f3f`, using `bitcoincore-rpc` 0.19.0 and
 `jsonrpc` 0.18.0. Integration tests exercise those actual pinned clients.
+The separate client-facing `IBitcoindRpc` script-history/proof interface is outside
+this profile.
 No reference Fedimint source is modified. See the [operator runbook](operations.md)
 for explicit guardian binding, startup preflight, stopped-store backup and recovery.
 
@@ -83,8 +84,24 @@ bitcoin-cli -datadir=/tmp -conf=/dev/null -rpcconnect=127.0.0.1 -rpcport=18443 g
 
 `getrawmempool` and `getrawmempool false` return full txid strings. They work with
 unauthenticated local reads independently of submission authorization or synthetic
-Core status. Verbose and sequence parameters are rejected; `getmempoolentry`,
-`getmempoolinfo` and `getrawtransaction` remain unsupported.
+Core status. Verbose and sequence parameters are rejected; `getmempoolentry`
+and `getmempoolinfo` remain unsupported.
+
+`getrawtransaction [txid,false]` fetches canonical witness-bearing bytes only for
+current observed membership. It leases the latest announcer if still maintained,
+then another maintained witness peer, without dialing or caching transaction bodies.
+The request uses txid-based `MSG_WITNESS_TX`, not `wtxid` inventory. Membership is
+checked again before return. This supports walletv2's output scan, not archive or
+transaction-index queries. Peer availability is not guaranteed.
+
+Each lookup permits two sequential peers, five seconds total, two seconds per
+visit, 32 frames per visit, 1,000,000 aggregate received bytes and 4,096 control-write
+bytes. Transactions must fit 400,000 bytes and weight units. Absent, expired or
+mined membership, no maintained peer, `notfound`, or local transaction admission
+limits return RPC `-5`; exhausted transport/corruption failures return `-32012`.
+Malformed or interrupted leases close; only clean completed exchanges return to
+the pool, without useful header/block service credit. Transaction bytes do not
+enter the selected-body fee amount cache.
 
 The view starts empty and grows from peer announcements; it does not request
 mempool dumps. Only legacy `MSG_TX` inventory contributes;
@@ -97,6 +114,7 @@ Logical budgets (engineering defaults, not measured RSS guarantees):
 | Pending full transaction IDs | 50,000, with two exact bounded expiry/LRU indexes |
 | Lifetime | Two-hour idle expiry; 24-hour hard age from admission |
 | Sources per entry | Four address-prefix groups, saturated; not independent operators |
+| Routing hint | One latest actual `SocketAddr` per entry, replaced in place without TTL/LRU refresh |
 | Confirmed filter | Latest twenty retained selected blocks, 1,000,000 keyed 64-bit fingerprints aggregate |
 | Inbox | 4,096 observations; excess dropped and counted |
 | Checksum staging | 1,024 transaction IDs per socket, at most four sockets |
@@ -110,6 +128,10 @@ A newly observed group can refresh idle life until source tracking saturates;
 reads never refresh it. A fresh later announcement can re-admit an expired entry.
 The four-socket cap is unchanged. Inventory uses separate bounded accounting from
 control traffic and coverage bodies; full checksums precede inbox admission.
+The routing hint adds at most 32 inline bytes per pending record (1.6 MB at the
+50,000-entry cap), plus at most 32 bytes per inbox record (128 KiB at capacity),
+before existing tree/deque allocation overhead; it has no separate index.
+Transaction reads charge inventory frames to their aggregate exchange budget.
 
 Coverage prefers the newest missing selected body and may lag indefinitely under
 load or peer failure. Successful consumer body fetches also populate the filter.
@@ -153,9 +175,28 @@ bitcoin-cli -datadir=/tmp -conf=/dev/null -rpcconnect=127.0.0.1 -rpcport=18443 g
 
 The component makes **zero network requests**. It inspects selected bodies that
 the existing background coverage or consumer fetches already delivered. It does
-not change coverage priority, download budgets, peer sockets, explorer requests,
-or `FeePolicy`. `estimatesmartfee 1 CONSERVATIVE` retains its exact fixed/unavailable
-behavior.
+not change coverage priority, download budgets, peer sockets or explorer requests.
+
+### Fee policy for the guardian adapter
+
+With no fixed override, CLI `--mempool` selects `FeePolicy::Observed`; without
+observation the policy is unavailable. Library callers choose `Observed`,
+`Fixed` or the explicit `Unavailable` opt-out. Fixed rates always win.
+Observed policy is a historical sample heuristic, not Core's confirmation-target
+estimator. It selects the fixed sample's **finite positive median upper endpoint**
+only for the current selected tip hash, zero height lag, age strictly under thirty
+minutes, no invalid observations, and at least 32 resolved transactions or a fully
+resolved population smaller than 32. A 128-member sample with only 32 resolved
+rates is unavailable; 64 resolved rates can provide the finite upper endpoint.
+Exact rational ordering precedes integer ceiling of `fee_sat * 1000 / vsize`.
+No rounded diagnostic quantile participates in the policy.
+
+`estimatesmartfee [1,"CONSERVATIVE"]` returns `{"blocks":1,"feerate":BTC_PER_KVB}`
+or `{"blocks":1}` when no usable rate exists, including a failed BTC amount
+round-trip. Reads do not fetch, redraw, refresh age or change coverage. Fedimint's
+Core adapter converts the BTC amount directly to sat/kvB; the node applies no
+wallet multiplier. Walletv1 can use its configured fallback for `None`; walletv2
+retracts that guardian's fee vote.
 
 Each newly inspected body newer than the active sample supplies one uniform
 sample without replacement: up to 128 transactions, excluding coinbase. Selection
@@ -322,10 +363,12 @@ disposable test state**, never guardian state.
 | `getblockcount []` | Real selected height. Fedimint adds one to obtain count. |
 | `getblockhash [height]` | Retained selected hash; height 1 has a pinned identity exception. |
 | `getblock [hash,0]` | Complete canonical witness-bearing bytes as hex. Omitted/verbose modes are rejected. Unknown hashes are not automatically archival queries. |
-| `estimatesmartfee [1,"CONSERVATIVE"]` | Explicit fixed BTC/kvB rate, or `errors` with no `feerate`. `blocks:1` echoes the supported policy target, not a prediction. |
+| `estimatesmartfee [1,"CONSERVATIVE"]` | Fixed or qualified observed BTC/kvB rate; otherwise only `blocks:1`. The block count echoes the supported target. |
 | `sendrawtransaction [hex]` | Disabled unless `--allow-rpc-submission`; txid after a completed local write only. |
 | `getblockchaininfo []` | Disabled unless `--fake-bitcoind`; real selected height/hash/network plus synthetic status below. |
 | `getnetworkinfo []` | Under the same flag, minimal synthetic version selector needed indirectly by the pinned client; not the full network-info schema. |
+| `getrawmempool []` | Current approximate txid membership under `--mempool`; `[false]` is also accepted. |
+| `getrawtransaction [txid,false]` | Current-membership witness transaction lookup under `--mempool`; no verbose or block-hash forms. |
 
 Fixed fee configuration is satoshis per **1,000 virtual bytes**, not sat/vB or
 sat/kwu. Startup rejects rates that cannot round-trip exactly through the pinned
@@ -402,7 +445,7 @@ Budgets are fixed and global to one service:
 * Four-second sync slices, followed by one second between visits, or five seconds
   with observation enabled to allow bounded background body retrieval.
   Network requests have a six-second owner deadline and five-second library
-  deadline; block visits use two attempts of at most two seconds each.
+   deadline; block and transaction reads use two attempts of at most two seconds each.
 * At most 4 MB block payload and one million decoded elements per foreground
   download; transaction hex decodes to at most 400,000 bytes/400,000 weight units.
 
@@ -412,7 +455,8 @@ validation, serialization and database work cannot be preempted. Cancellation
 closes leased streams and drops queued work; shutdown aborts and joins every
 owned HTTP task and closes the pool. The embedding caller still owns its runtime.
 
-Error codes distinguish malformed requests (`-32700`, `-32600`, `-32602`),
+Error codes distinguish unavailable observed transactions (`-5`),
+malformed requests (`-32700`, `-32600`, `-32602`),
 unsupported methods (`-32601`), below-retention height (`-32010`), unknown or
 not-retained hash (`-32011`), temporary peer/deadline failure (`-32012`), terminal
 local recovery (`-32013`), queue saturation (`-32014`) and future height (`-8`).

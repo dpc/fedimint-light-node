@@ -224,7 +224,8 @@ model, or guarantee that a fixed rate will confirm. Policy does not compute or
 validate fees of submitted transactions.
 
 All CLI operations accept `--fixed-fee-sats-per-kvb INTEGER` and report the
-policy as `fixed-operator-supplied`; omission reports `unavailable`. Configuration
+policy as `fixed-operator-supplied`. Serving with `--mempool` and no fixed override
+selects `FeePolicy::Observed`; otherwise fees are unavailable. Configuration
 belongs to the invocation, **not the database**: supply it on each restart.
 
 ```sh
@@ -232,14 +233,10 @@ fedimint-light-node --db ./node-data/headers.redb \
   --fixed-fee-sats-per-kvb 2500 status
 ```
 
-This is not a Fedimint adapter. In the read-only reference at Fedimint commit
-`502b7ec7da37d231b21d5bce993e9b9a9e7b63a6`,
-walletv1 `get_fee_rate_opt` uses its configured fallback when the backend has
-no rate. Walletv2 `consensus_feerate` discards `None` votes and needs a threshold
-of actual fee votes. Thus the unavailable default does **not** establish walletv2
-usability: a future deployment must configure appropriate fixed policies
-consistently across guardians or explicitly design another fee source.
-Recheck those interfaces when implementing integration.
+The [guardian RPC profile](guardian-rpc.md#fee-policy-for-the-guardian-adapter)
+documents observed-rate selection, wire units and the pinned Fedimint interface.
+Library callers can explicitly choose `Observed` or retain the `Unavailable`
+opt-out independently of enabling observation.
 
 ### Network operation limits
 
@@ -377,7 +374,7 @@ formatting, prose, lockfile freshness, builds, and Clippy.
 
 Networks beyond mainnet, automatic consumer finality binding and a measured
 network fee estimator remain unimplemented. The narrow RPC transport supports
-explicit static or unavailable fee policy.
+explicit static, observed or unavailable fee policy.
 Bootstrap supplies conservative configurable defaults; lower-level APIs still take
 explicit capacities. Schema migration and capacity resizing are not implemented.
 The validated store retains bounded context separately

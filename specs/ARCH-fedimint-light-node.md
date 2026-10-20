@@ -53,11 +53,11 @@ validated mempool. RPC snapshots without verbose metadata expose the incomplete 
 diagnostics report coverage and losses independently of synthetic Core status.
 Manual local guardian identity binding and startup preflight are implemented;
 automatic consumer database/finality coordination remains absent.
-Fee policy is caller configuration: unavailable by
-default or a positive operator-supplied static rate, not an estimator or a new
-network service. It is not persisted with chain state.
-The observation mode separately derives partial historical fee arithmetic from
-already inspected bodies, without new requests or changing fee policy.
+Fee policy is invocation-local configuration: unavailable, fixed, or observed.
+CLI observation mode selects observed fees unless a fixed override is supplied.
+The observer derives fee arithmetic from already inspected bodies without new
+requests. Current-member transaction retrieval leases maintained witness peers
+without caching bodies or adding their outputs to selected-body amount provenance.
 
 ## Boundaries and flow
 

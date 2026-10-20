@@ -21,6 +21,7 @@ fn logging_names_do_not_echo_unknown_methods_or_parameters() {
     for (method, expected) in [
         ("getblock", "getblock"),
         ("getfeeobservations", "getfeeobservations"),
+        ("getrawtransaction", "getrawtransaction"),
         ("secret-password", "unsupported"),
         ("sendrawtransaction", "sendrawtransaction"),
     ] {
@@ -33,6 +34,9 @@ fn logging_names_do_not_echo_unknown_methods_or_parameters() {
         assert_eq!(request.log_method(), expected);
         if method == "getfeeobservations" {
             assert!(!request.is_network());
+        }
+        if method == "getrawtransaction" {
+            assert!(request.is_network());
         }
     }
 }

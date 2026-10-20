@@ -55,7 +55,7 @@ pub struct HeaderSync {
     generation: u64,
     /// Terminal local/recovery failures require explicit caller intervention.
     stopped: bool,
-    /// Operator fee information, independent of selected headers and persistence.
+    /// Invocation-local fee source; observed rates qualify against current selection.
     fee_policy: FeePolicy,
     /// Optional in-memory unvalidated transaction observations.
     mempool: Option<crate::mempool_observation::MempoolObservation>,
@@ -72,7 +72,7 @@ pub struct HeaderSync {
 /// Selected state, not a freshness claim or a consensus-valid chain guarantee.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyncStatus {
-    /// Explicit operator policy, not an inferred network estimate.
+    /// Explicit invocation-local fee source.
     pub fee_policy: FeePolicy,
     /// Current selected height.
     pub height: u64,
@@ -342,8 +342,8 @@ impl HeaderSync {
             .expect("enabled")
             .lock()
             .expect("no panicking inbox owner");
-        for (txid, source) in inbox.queue.drain(..) {
-            cache.observe(txid, source, now);
+        for (txid, source, announcer) in inbox.queue.drain(..) {
+            cache.observe_from(txid, source, Some(announcer), now);
         }
         Ok(())
     }
@@ -352,6 +352,35 @@ impl HeaderSync {
     pub fn mempool_snapshot(&mut self) -> Result<Option<Vec<bitcoin::Txid>>, StoreError> {
         self.refresh_mempool()?;
         Ok(self.mempool.as_ref().map(|cache| cache.snapshot()))
+    }
+
+    /// Fetch only a currently observed transaction from maintained witness peers.
+    ///
+    /// No body is cached or admitted as selected-chain amount provenance. Cancellation
+    /// closes the exclusive lease; membership is checked again after the exchange.
+    pub async fn fetch_mempool_transaction(
+        &mut self,
+        txid: bitcoin::Txid,
+    ) -> Result<Option<bitcoin::Transaction>, BlockDownloadError> {
+        if self.stopped {
+            return Err(BlockDownloadError::Stopped);
+        }
+        self.refresh_mempool()?;
+        let Some(announcer) = self
+            .mempool
+            .as_ref()
+            .and_then(|cache| cache.announcer(txid))
+        else {
+            return Ok(None);
+        };
+        let transaction =
+            crate::transaction_download::download(&mut self.pool, txid, announcer).await?;
+        self.refresh_mempool()?;
+        Ok(transaction.filter(|_| {
+            self.mempool
+                .as_ref()
+                .is_some_and(|cache| cache.announcer(txid).is_some())
+        }))
     }
 
     /// Return historical, partial, unvalidated fee observations, or None when disabled.
@@ -457,6 +486,18 @@ impl HeaderSync {
     /// Return explicit fee policy without contacting a peer or estimating fees.
     pub fn fee_policy(&self) -> FeePolicy {
         self.fee_policy
+    }
+
+    /// Resolve the selected fee source without network I/O or observation refresh.
+    pub fn fee_sats_per_kvb(&mut self) -> Result<Option<std::num::NonZeroU64>, StoreError> {
+        match self.fee_policy {
+            FeePolicy::Fixed { sats_per_kvb } => Ok(Some(sats_per_kvb)),
+            FeePolicy::Unavailable => Ok(None),
+            FeePolicy::Observed => {
+                self.refresh_mempool()?;
+                Ok(self.mempool.as_ref().and_then(|cache| cache.sats_per_kvb()))
+            }
+        }
     }
 
     /// Return selected tip height plus one, without protecting the returned state.

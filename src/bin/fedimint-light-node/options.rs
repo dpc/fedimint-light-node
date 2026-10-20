@@ -26,7 +26,7 @@ pub struct Options {
     /// Database cache in MiB, not an RSS or disk-size limit.
     #[arg(long, global = true, default_value_t = 8, value_parser = clap::value_parser!(u64).range(1..=64))]
     pub cache_mib: u64,
-    /// Positive operator-supplied sats per 1,000 virtual bytes; omitted = unavailable.
+    /// Positive fixed sats per 1,000 virtual bytes, overriding observed fees with --mempool.
     /// Static policy only, never a network estimate; not persisted in the database.
     #[arg(long, global = true)]
     pub fixed_fee_sats_per_kvb: Option<NonZeroU64>,
@@ -43,6 +43,10 @@ pub struct Options {
     #[command(subcommand)]
     pub command: Option<Command>,
 }
+
+#[cfg(test)]
+#[path = "options_tests.rs"]
+mod tests;
 
 impl Options {
     /// Reject root-level service settings rather than silently ignoring them with a command.
@@ -67,11 +71,20 @@ impl Options {
         }
         Ok(())
     }
-    /// Resolve explicit caller fee configuration without inventing an estimate.
+    /// Fixed fees override observation; use the options of the actual serve command.
     pub fn fee_policy(&self) -> FeePolicy {
+        let mempool = match &self.command {
+            Some(Command::Serve { rpc, .. }) => rpc.mempool,
+            None => self.rpc.mempool,
+            _ => false,
+        };
         self.fixed_fee_sats_per_kvb
             .map(|sats_per_kvb| FeePolicy::Fixed { sats_per_kvb })
-            .unwrap_or_default()
+            .unwrap_or(if mempool {
+                FeePolicy::Observed
+            } else {
+                FeePolicy::Unavailable
+            })
     }
     /// Convert checked CLI budgets to the library's explicit storage configuration.
     pub fn store_config(&self) -> StoreConfig {

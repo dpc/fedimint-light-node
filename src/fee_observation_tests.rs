@@ -42,6 +42,134 @@ fn status(observer: &FeeObservation) -> FeeObservationStatus {
     observer.status(Instant::now(), 0, 0)
 }
 
+/// Construct exact metadata to cover every resolution boundary without random draws.
+fn policy_sample(count: usize, resolved: usize) -> FeeObservation {
+    let key = (1, genesis_block(Network::Bitcoin).block_hash());
+    let mut observer = FeeObservation::new();
+    observer.reconcile(&[key]);
+    observer.active = Some(ActiveSample {
+        key,
+        observed: Instant::now(),
+        observed_at: 0,
+        population: count,
+        transactions: (0..count)
+            .map(|_| SampledTransaction {
+                output_sum: 0,
+                vsize: 3,
+                inputs: 1,
+                budget: false,
+                invalid: false,
+            })
+            .collect(),
+        slots: (0..count)
+            .map(|owner| InputSlot {
+                owner,
+                outpoint: OutPoint::null(),
+                value: (owner < resolved).then_some(owner as u64 + 1),
+                provenance: None,
+            })
+            .collect(),
+    });
+    observer
+}
+
+#[test]
+fn observed_policy_uses_fixed_population_upper_endpoint_and_exact_ceiling() {
+    for count in (0..=33).chain([127, 128]) {
+        for resolved in 0..=count {
+            let observer = policy_sample(count, resolved);
+            let rank = count.div_ceil(2);
+            let eligible = count > 0
+                && rank <= resolved
+                && (resolved >= 32 || (count < 32 && resolved == count));
+            assert_eq!(
+                observer.sats_per_kvb(Instant::now()).map(|r| r.get()),
+                eligible.then(|| (rank as u64 * 1000).div_ceil(3)),
+                "{count}/{resolved}"
+            );
+        }
+    }
+    let observer = policy_sample(128, 64);
+    let display = status(&observer);
+    assert_ne!(
+        display.subset_p50_sat_per_vb,
+        display.sample_median_upper_sat_per_vb
+    );
+    assert_eq!(observer.sats_per_kvb(Instant::now()).unwrap().get(), 21_334);
+    assert!(
+        policy_sample(128, 32)
+            .sats_per_kvb(Instant::now())
+            .is_none()
+    );
+}
+
+#[test]
+fn observed_policy_freshness_identity_invalid_zero_and_arithmetic_limits() {
+    assert!(FeeObservation::new().sats_per_kvb(Instant::now()).is_none());
+    let mut observer = policy_sample(1, 1);
+    let observed = observer.active.as_ref().unwrap().observed;
+    assert_eq!(observer.sats_per_kvb(observed).unwrap().get(), 334);
+    assert!(observer.sats_per_kvb(observed + STALE_AGE).is_none());
+    assert!(
+        observer
+            .sats_per_kvb(observed + STALE_AGE - Duration::from_nanos(1))
+            .is_some()
+    );
+    for (value, vsize, invalid, sum) in [
+        (0, 3, false, 0),
+        (1, 0, false, 0),
+        (1, 3, true, 0),
+        (MAX_MONEY + 1, 3, false, 0),
+        (1, 3, false, 2),
+    ] {
+        let sample = observer.active.as_mut().unwrap();
+        sample.transactions[0].vsize = vsize;
+        sample.transactions[0].invalid = invalid;
+        sample.transactions[0].output_sum = sum;
+        sample.slots[0].value = Some(value);
+        assert!(observer.sats_per_kvb(observed).is_none());
+    }
+    let mut observer = policy_sample(1, 1);
+    observer.selected[0].1 = BlockHash::all_zeros();
+    assert!(observer.sats_per_kvb(observed).is_none()); // Same-height replacement.
+    let mut observer = policy_sample(1, 1);
+    observer.selected.insert(0, (2, BlockHash::all_zeros()));
+    assert!(observer.sats_per_kvb(observed).is_none()); // Tip advancement.
+    observer.reconcile(&[(0, BlockHash::all_zeros())]);
+    assert!(observer.sats_per_kvb(observed).is_none()); // Rollback.
+    assert_eq!(
+        exact_sats_per_kvb(MAX_MONEY, 1).unwrap().get(),
+        MAX_MONEY * 1000
+    );
+    assert!(exact_sats_per_kvb(u64::MAX, 1).is_none());
+    assert!(exact_sats_per_kvb(1, 0).is_none());
+}
+
+#[test]
+fn rational_ordering_does_not_use_display_precision() {
+    let mut observer = policy_sample(3, 3);
+    let sample = observer.active.as_mut().unwrap();
+    // These display as the same f64, but the exact ratios still have a strict order.
+    for (i, value) in [MAX_MONEY, MAX_MONEY - 1, MAX_MONEY - 2]
+        .into_iter()
+        .enumerate()
+    {
+        sample.slots[i].value = Some(value);
+        sample.transactions[i].vsize = value - 1;
+    }
+    let (rates, invalid) = sample.rates();
+    assert_eq!(invalid, 0);
+    assert_eq!(
+        rates,
+        vec![
+            (MAX_MONEY, MAX_MONEY - 1),
+            (MAX_MONEY - 1, MAX_MONEY - 2),
+            (MAX_MONEY - 2, MAX_MONEY - 3)
+        ]
+    );
+    assert_eq!(observer.sats_per_kvb(Instant::now()).unwrap().get(), 1001);
+}
+
 #[test]
 fn warmup_same_body_zero_fee_duplicate_and_age() {
     let mut observer = FeeObservation::new();

@@ -23,6 +23,24 @@ fn repeated_source_does_not_refresh_and_reads_do_not_refresh() {
 }
 
 #[test]
+fn latest_endpoint_hint_replaces_in_place_without_renewing_any_lifetime() {
+    let mut cache = MempoolObservation::new();
+    let now = Instant::now();
+    let a = "127.0.0.1:1000".parse().unwrap();
+    let b = "127.0.0.2:2000".parse().unwrap();
+    cache.observe_from(txid(1), 42, Some(a), now);
+    let idle = cache.idle.clone();
+    let age = cache.age.clone();
+    cache.observe_from(txid(1), 42, Some(b), now + IDLE_AGE / 2);
+    assert_eq!(cache.announcer(txid(1)), Some(Some(b)));
+    assert_eq!(cache.idle, idle);
+    assert_eq!(cache.age, age);
+    cache.expire(now + IDLE_AGE);
+    assert_eq!(cache.announcer(txid(1)), None);
+    assert!(std::mem::size_of::<Observation>() <= 128);
+}
+
+#[test]
 fn distinct_sources_saturate_and_hard_age_is_independent() {
     let mut cache = MempoolObservation::new();
     let now = Instant::now();

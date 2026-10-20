@@ -1,6 +1,7 @@
 //! Bounded checksummed legacy inventory admission shared by idle and leased readers.
 
 use std::collections::VecDeque;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -20,7 +21,7 @@ const STAGING: usize = 1024;
 /// Aggregate inventory state; no cache or chain access from socket tasks.
 pub(crate) struct InventoryInbox {
     /// Accepted fixed-size observations awaiting the exclusive owner.
-    pub queue: VecDeque<(Txid, u64)>,
+    pub queue: VecDeque<(Txid, u64, SocketAddr)>,
     /// Complete-frame observations discarded by staging/inbox pressure.
     pub dropped: u64,
     /// Fixed-minute inventory window, independent of control and body traffic.
@@ -47,6 +48,8 @@ pub(crate) struct InventoryObserver {
     inbox: Arc<Mutex<InventoryInbox>>,
     /// Stable prefix identity; reconnects do not create new source groups.
     source: u64,
+    /// Numeric endpoint of the socket that delivered this inventory.
+    announcer: SocketAddr,
     /// Fixed-minute per-connection window.
     window: Instant,
     /// Declared-byte allowance, including incomplete frames.
@@ -57,10 +60,11 @@ pub(crate) struct InventoryObserver {
 
 impl InventoryObserver {
     /// Construct only after an explicitly relay-enabled handshake.
-    pub fn new(inbox: Arc<Mutex<InventoryInbox>>, source: u64) -> Self {
+    pub fn new(inbox: Arc<Mutex<InventoryInbox>>, announcer: SocketAddr) -> Self {
         Self {
             inbox,
-            source,
+            source: crate::peer_address::group(announcer),
+            announcer,
             window: Instant::now(),
             bytes: 2 * 1024 * 1024,
             frames: 1024,
@@ -142,7 +146,7 @@ impl InventoryObserver {
         let mut inbox = self.inbox.lock().expect("no panicking inbox owner");
         for txid in staged {
             if inbox.queue.len() < INBOX {
-                inbox.queue.push_back((txid, self.source));
+                inbox.queue.push_back((txid, self.source, self.announcer));
             } else {
                 dropped += 1;
             }

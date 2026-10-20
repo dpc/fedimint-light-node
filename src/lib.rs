@@ -69,6 +69,7 @@ pub mod store_error;
 pub mod sync_config;
 pub mod sync_error;
 pub mod transaction_decode;
+mod transaction_download;
 pub mod transaction_submission_config;
 pub mod transaction_submission_report;
 pub mod v1_block_frame;

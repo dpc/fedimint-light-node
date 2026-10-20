@@ -26,14 +26,17 @@ impl RpcRequest {
     /// Return only supported names, never arbitrary client-supplied strings.
     pub(crate) fn log_method(&self) -> &str {
         match self.method.as_str() {
-            name @ ("getfeeobservations" | "getrawmempool" | "getblockcount" | "getblockhash"
-            | "getblockchaininfo" | "getnetworkinfo" | "estimatesmartfee" | "getblock"
-            | "sendrawtransaction") => name,
+            name @ ("getrawtransaction" | "getfeeobservations" | "getrawmempool"
+            | "getblockcount" | "getblockhash" | "getblockchaininfo" | "getnetworkinfo"
+            | "estimatesmartfee" | "getblock" | "sendrawtransaction") => name,
             _ => "unsupported",
         }
     }
     pub(crate) fn is_network(&self) -> bool {
-        matches!(self.method.as_str(), "getblock" | "sendrawtransaction")
+        matches!(
+            self.method.as_str(),
+            "getblock" | "sendrawtransaction" | "getrawtransaction"
+        )
     }
     pub(crate) fn parse(mut value: Value) -> Result<Self, RpcError> {
         let invalid = || {
@@ -126,7 +129,7 @@ fn storage(error: StoreError) -> RpcError {
 /// Convert static sat/kvB policy only when the pinned client's f64 amount round-trips.
 pub(crate) fn fee_value(policy: FeePolicy) -> Result<Value, RpcError> {
     match policy.sats_per_kvb() {
-        None => Ok(json!({"blocks": 1, "errors": ["operator fee policy unavailable"]})),
+        None => Ok(json!({"blocks": 1})),
         Some(rate) => {
             let btc = rate.get() as f64 / 100_000_000.0;
             if Amount::from_btc(btc).ok().map(Amount::to_sat) != Some(rate.get()) {
@@ -235,7 +238,32 @@ pub(crate) async fn dispatch(
         "estimatesmartfee"
             if p.len() == 2 && p[0].as_u64() == Some(1) && p[1] == "CONSERVATIVE" =>
         {
-            fee_value(sync.fee_policy())
+            let rate = sync.fee_sats_per_kvb().map_err(storage)?;
+            let policy = rate.map_or(FeePolicy::Unavailable, |sats_per_kvb| FeePolicy::Fixed {
+                sats_per_kvb,
+            });
+            // Dynamic conversion failure is ordinary missing fee information.
+            Ok(fee_value(policy).unwrap_or_else(|_| json!({"blocks": 1})))
+        }
+        "getrawtransaction" if !sync.mempool_enabled() => Err(RpcError::new(
+            -32601,
+            "mempool observation disabled; enable --mempool",
+        )),
+        "getrawtransaction" if p.len() == 2 && p[1] == false => {
+            let txid = bitcoin::Txid::from_str(p[0].as_str().ok_or_else(RpcError::params)?)
+                .map_err(|_| RpcError::params())?;
+            let transaction = sync
+                .fetch_mempool_transaction(txid)
+                .await
+                .map_err(|error| match error {
+                    BlockDownloadError::Store(error) => storage(error),
+                    BlockDownloadError::Stopped => RpcError::recovery(),
+                    _ => RpcError::unavailable(),
+                })?
+                .ok_or_else(|| RpcError::new(-5, "transaction not available"))?;
+            Ok(Value::String(
+                bitcoin::consensus::serialize(&transaction).to_lower_hex_string(),
+            ))
         }
         "getblock" if p.len() == 2 && p[1].as_u64() == Some(0) => {
             let hash = BlockHash::from_str(p[0].as_str().ok_or_else(RpcError::params)?)
@@ -304,7 +332,7 @@ pub(crate) async fn dispatch(
         }
         "getblockcount" | "getblockhash" | "getblockchaininfo" | "getnetworkinfo"
         | "estimatesmartfee" | "getblock" | "sendrawtransaction" | "getrawmempool"
-        | "getfeeobservations" => Err(RpcError::params()),
+        | "getfeeobservations" | "getrawtransaction" => Err(RpcError::params()),
         _ => Err(RpcError::new(
             -32601,
             "method not supported by guardian-only RPC",
