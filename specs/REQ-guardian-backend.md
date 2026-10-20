@@ -56,7 +56,7 @@ subsystem implicitly to solve this.
 
 The requester explicitly permits fake Core status only with `--fake-bitcoind`.
 Actual selected height, hash, network identity, bodies and fee units remain real.
-Synthetic status must identify its fabricated fields, never bypass local safety
+Synthetic status must document its fabricated fields, never bypass local safety
 checks, and never imply full validation, objective freshness or mempool acceptance.
 Standard reads do not communicate guardian commitment and must not advance
 durable protection. The initial RPC profile is not automatic guardian-finality

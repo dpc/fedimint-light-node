@@ -551,12 +551,23 @@ fn normal_startup_never_replaces_invalid_existing_state() {
 #[cfg(unix)]
 #[test]
 fn normal_startup_serves_existing_unbound_state_without_credentials_and_stops() {
+    assert_normal_startup(&[]);
+}
+
+#[cfg(unix)]
+#[test]
+fn enabled_observation_and_core_compatibility_report_modes_without_warnings() {
+    assert_normal_startup(&["--mempool", "--fake-bitcoind"]);
+}
+
+#[cfg(unix)]
+fn assert_normal_startup(flags: &[&str]) {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("chain");
     create(&db);
     let peer = TcpListener::bind("127.0.0.1:0").unwrap();
     // Read the announced dynamic port instead of racing a released test socket.
-    let mut child = Child::start(command(&db).args([
+    let mut child = Child::start(command(&db).args(flags).args([
         "--manual-only",
         "--peer",
         &peer.local_addr().unwrap().to_string(),
@@ -583,7 +594,13 @@ fn normal_startup_serves_existing_unbound_state_without_credentials_and_stops() 
         assert_ne!(reader.read_line(&mut line).unwrap(), 0);
         diagnostics.push_str(&line);
         if let Some((_, line)) = line.split_once("rpc_listen=") {
-            assert!(line.contains("rpc_no_auth=true fake_bitcoind=false submission_only=false"));
+            assert!(line.contains("rpc_no_auth=true"));
+            assert!(line.contains(&format!(
+                "fake_bitcoind={}",
+                flags.contains(&"--fake-bitcoind")
+            )));
+            assert!(line.contains(&format!("mempool={}", flags.contains(&"--mempool"))));
+            assert!(line.contains("submission_only=false"));
             break line.split_whitespace().next().unwrap().to_string();
         }
     };
@@ -604,9 +621,19 @@ fn normal_startup_serves_existing_unbound_state_without_credentials_and_stops() 
     );
     assert!(child.finish().status.success());
     reader.read_to_string(&mut diagnostics).unwrap();
-    assert!(
-        diagnostics.contains("bitcoin-cli -datadir=/tmp -conf=/dev/null -rpcconnect=127.0.0.1")
-    );
+    for irrelevant in [
+        " WARN ",
+        "unproven",
+        "NOT automatic",
+        "guardian_coordination",
+        "UTXO",
+        "fee_policy=unavailable",
+        "bitcoin-cli",
+        "curl --noproxy",
+    ] {
+        assert!(!diagnostics.contains(irrelevant), "{diagnostics}");
+    }
+    assert!(diagnostics.contains("selected_height=3"), "{diagnostics}");
     assert!(!diagnostics.contains("-rpcuser"));
     assert!(!diagnostics.contains("-rpcpassword"));
     assert!(!diagnostics.contains("initializing new mainnet state"));
@@ -629,9 +656,9 @@ fn fee_policy_is_explicit_positive_and_invocation_local() {
         assert!(status.contains(&format!("fee_sats_per_kvb={value}\n")));
     }
     let status = stdout(&command(&db).arg("status").output().unwrap());
-    assert!(status.contains("fee_policy=unavailable"));
+    assert!(!status.contains("fee_policy="));
     assert!(!status.contains("fee_sats_per_kvb="));
-    assert!(status.contains("sync_progress=unavailable"));
+    assert!(!status.contains("sync_progress="));
 }
 
 #[test]
@@ -674,11 +701,18 @@ fn status_and_protection_preserve_pinned_identity_and_honest_count() {
         "retained_headers=4",
         "checkpoint_height=0",
         "protected_height=0",
-        "freshness=unproven",
-        "body_availability=unproven",
-        "validation=mechanical-not-full-consensus",
+        "guardian_id=unbound",
     ] {
         assert!(status.lines().any(|line| line == expected), "{status}");
+    }
+    for irrelevant in [
+        "freshness=",
+        "body_availability=",
+        "validation=",
+        "guardian_readiness=",
+        "local_state=",
+    ] {
+        assert!(!status.contains(irrelevant), "{status}");
     }
     assert!(status.contains(&format!("height_one_hash={}", headers[1].block_hash())));
     assert!(status.contains(&format!("checkpoint_hash={}", headers[0].block_hash())));
@@ -936,7 +970,7 @@ fn loopback_sync_once_and_fetch_publish_real_block_bytes() {
     assert!(matches!(read(&mut stream), NetworkMessage::GetHeaders(_)));
     send(&mut stream, NetworkMessage::Headers(vec![]));
     let result = child.finish();
-    assert!(stdout(&result).contains("freshness=unproven"));
+    assert!(stdout(&result).contains("selected_height=3"));
     drop(stream);
 
     let path = dir.path().join("genesis.raw");
@@ -994,7 +1028,7 @@ fn stalled_peer_once_exits_with_error_without_claiming_health() {
     let result = child.finish();
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("peer deadline expired"));
-    assert!(String::from_utf8_lossy(&result.stdout).contains("freshness=unproven"));
+    assert!(String::from_utf8_lossy(&result.stdout).contains("selected_height=3"));
 }
 
 #[cfg(unix)]
@@ -1077,8 +1111,8 @@ fn broadcast_delivers_witness_bytes_and_reports_only_local_write_success() {
     let output = stdout(&child.finish());
     assert!(output.contains("submitted=1"));
     assert!(output.contains("submitted-local-write-only"));
-    assert!(output.contains("pong-not-acceptance"));
-    assert!(output.contains("acceptance=unproven propagation=unproven confirmation=unproven"));
+    assert!(output.contains("post_write=pong"));
+    assert!(!output.contains("unproven"));
     assert_eq!(std::fs::read(&input).unwrap(), bytes);
     assert_eq!(
         stdout(&command(&db).arg("status").output().unwrap()),

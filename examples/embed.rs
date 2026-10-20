@@ -1,7 +1,7 @@
-//! A caller-owned lifecycle, not a guardian adapter or an automatic fallback.
+//! A caller-owned lifecycle for synchronization, retrieval and submission.
 //!
 //! Explicit creation or offline reopen, queries, one peer visit, body retrieval,
-//! optional protection and bounded submission. No consumer database is implemented.
+//! optional protection and bounded submission.
 
 use std::error::Error;
 use std::io::Read;
@@ -73,8 +73,6 @@ async fn run(args: Args) -> Result<(), Box<dyn Error>> {
             peers: vec![args.peer],
             ..BootstrapConfig::default()
         };
-        // HTTPS source agreement is explicitly trusted, not consensus. Resolver
-        // jobs can outlive cancellation; publication errors require inspection.
         tokio::select! {
             biased;
             _ = &mut stop => return Ok(()),
@@ -102,7 +100,7 @@ async fn run(args: Args) -> Result<(), Box<dyn Error>> {
     )?
     .with_fee_policy(fee_policy);
     println!(
-        "selected_count={} height_one_hash={} operator_fee_policy={:?} sync_progress={:?}; no fee estimate; freshness unproven",
+        "selected_count={} height_one_hash={} operator_fee_policy={:?} sync_progress={:?}",
         node.block_count()?,
         node.chain_id(),
         node.fee_policy(),
@@ -186,10 +184,7 @@ async fn run(args: Args) -> Result<(), Box<dyn Error>> {
             }
             result = node.submit_transaction(&transaction, limits) => result?,
         };
-        println!(
-            "completed local writes={}; acceptance/propagation/confirmation unproven",
-            report.submitted()
-        );
+        println!("completed local writes={}", report.submitted());
         if report.submitted() == 0 {
             return Err("no completed submission; started writes may still have delivered".into());
         }

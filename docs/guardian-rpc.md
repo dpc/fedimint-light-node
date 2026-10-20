@@ -2,8 +2,7 @@
 
 `serve` synchronizes headers while exposing **seven guardian compatibility methods**,
 plus an explicitly enabled approximate transaction-observation query.
-It is not Bitcoin Core, a full validator, or a production guardian-finality
-integration. The compatibility target is Fedimint
+The compatibility target is Fedimint
 `502b7ec7da37d231b21d5bce993e9b9a9e7b63a6`, using `bitcoincore-rpc` 0.19.0 and
 `jsonrpc` 0.18.0. Integration tests exercise those actual pinned clients.
 No reference Fedimint source is modified. See the [operator runbook](operations.md)
@@ -52,7 +51,8 @@ Use `cargo run -- --fake-bitcoind` only when you want the synthetic
 `getblockchaininfo` and `getnetworkinfo` compatibility schema described below.
 `--db /trusted/path/chain.redb` overrides the path; custom `--capacity` must match
 on every reopen. `--rpc-bind 127.0.0.1:0` chooses an available port if the default
-is occupied; startup prints matching query commands.
+is occupied; startup prints the chosen address. Debug logging includes matching
+query commands.
 
 For authenticated normal startup instead:
 
@@ -84,13 +84,10 @@ bitcoin-cli -datadir=/tmp -conf=/dev/null -rpcconnect=127.0.0.1 -rpcport=18443 g
 `getrawmempool` and `getrawmempool false` return full txid strings. They work with
 unauthenticated local reads independently of submission authorization or synthetic
 Core status. Verbose and sequence parameters are rejected; `getmempoolentry`,
-`getmempoolinfo` and `getrawtransaction` remain unsupported. No fees, dependencies,
-acceptance metadata, transaction bodies, persistence or automatic rebroadcast
-are inferred from observations.
+`getmempoolinfo` and `getrawtransaction` remain unsupported.
 
-This is an incomplete, unvalidated observation view, not a Bitcoin mempool.
-New connections do not supply a full existing snapshot, and the node does not
-request unrestricted mempool dumps. Only legacy `MSG_TX` inventory contributes;
+The view starts empty and grows from peer announcements; it does not request
+mempool dumps. Only legacy `MSG_TX` inventory contributes;
 witness transaction identities are not reinterpreted as transaction IDs.
 
 Logical budgets (engineering defaults, not measured RSS guarantees):
@@ -158,8 +155,7 @@ The component makes **zero network requests**. It inspects selected bodies that
 the existing background coverage or consumer fetches already delivered. It does
 not change coverage priority, download budgets, peer sockets, explorer requests,
 or `FeePolicy`. `estimatesmartfee 1 CONSERVATIVE` retains its exact fixed/unavailable
-behavior. This is not a Core estimator, an automatic recommendation, a mempool
-fee distribution, or a prediction of confirmation time.
+behavior.
 
 Each newly inspected body newer than the active sample supplies one uniform
 sample without replacement: up to 128 transactions, excluding coinbase. Selection
@@ -172,8 +168,8 @@ no raw transactions, scripts or witnesses.
 Each exact observation needs **all input amounts**. The arithmetic checks amount
 ranges, sums, negative fees and output indices, while body admission also rejects
 duplicate and null inputs. Zero fees are legitimate observations. A parent txid
-binds its outputs, but proves neither unspentness nor script validity. The result
-has `trust=body_integrity_only`; detected contradictions set `invalid_observation`
+binds its outputs, but proves neither unspentness nor script validity.
+Detected contradictions set `invalid_observation`
 and suppress all quantiles and bounds rather than silently dropping bad samples.
 This is additional local arithmetic, not spend or full consensus validation.
 Rates use satoshis divided by `ceil(BIP141_weight / 4)`, not Core's potentially
@@ -259,8 +255,7 @@ or archival recovery is added.
 
 This small demo uses a disposable private directory, a 144-header retained
 window and no transaction submission. It downloads recent ancestry and a full
-block, not the whole chain. Review [bootstrap trust](guide.md#initial-trusted-bootstrap)
-and [security boundaries](../SECURITY.md) first. Internet HTTPS, DNS and outbound
+block. Internet HTTPS, DNS and outbound
 Bitcoin P2P access are required. Public peers may fail or decline blocks.
 
 Build with `nix build` and use `./result/bin/fedimint-light-node`, or
@@ -283,8 +278,8 @@ chmod 700 "$DEMO"
   --rpc-no-auth --fake-bitcoind --standalone
 ```
 
-Startup prints selected state, the loopback address, and the complete synthetic
-field warning. Repeated `sync:` lines show selected height/hash, generation,
+Startup prints selected state, the loopback address, and enabled modes.
+Bounded synchronization summaries show selected height/hash, generation,
 connection/candidate counts and visit results. Header selection can advance
 from the bootstrap checkpoint to a peer's tip. Empty responses and unchanged
 height are normal; neither proves freshness.
@@ -338,13 +333,10 @@ client's floating-point BTC amount conversion. No policy is persisted or fetched
 from the network. An unavailable estimate can support walletv1 fallback, but is
 not sufficient for walletv2 fee voting.
 
-Submission is a separate explicit deployment acknowledgement. Even the
-one-argument form does **not** enforce Core's default maximum fee or burn limit.
-Extra safety-limit arguments are rejected. There is no input lookup, mempool,
-script validation, policy acceptance, automatic retry or durable transaction
-queue. Cancellation/post-write errors may follow delivery; retry may duplicate
-submission. No `-27` already-confirmed claim is fabricated. Never test this
-method against public peers with real transactions as part of a compatibility demo.
+Submission requires `--allow-rpc-submission` and credentials. The method returns
+the txid after a completed local write. Extra fee/burn-limit arguments are rejected;
+Core's implicit limits are not implemented. See
+[transaction submission](transaction-submission.md) for report and retry semantics.
 
 ## Synthetic status, default off
 
@@ -353,9 +345,9 @@ method against public peers with real transactions as part of a compatibility de
 `size_on_disk=0`, `pruned=true`, and `version=190000`. These are schema sentinels,
 not measured difficulty/time, freshness, full validation, absolute accumulated
 work, database size, Core pruning behavior or a claim to run Core 0.19.
-No softfork deployment state is invented. Native startup flags and the warning
-enumerate every synthetic field; `getblockchaininfo.warnings` carries the same
-inventory. Native `sync:` diagnostics remain truthful observations.
+No softfork deployment state is invented. Startup reports `fake_bitcoind=true`;
+the field definitions above document this compatibility mode.
+`getblockchaininfo.warnings` is empty during normal operation.
 
 `blocks`, `headers` and `bestblockhash` use one real selected-header snapshot;
 Core's stronger interpretation of fully validated blocks does not apply.

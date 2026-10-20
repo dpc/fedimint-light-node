@@ -54,9 +54,6 @@ pub async fn run(
             if !source.is_empty() {
                 config.sources = source;
             }
-            tracing::warn!(
-                "bootstrap: trusting configured source agreement; no consensus/freshness guarantee"
-            );
             let store = tokio::select! {
                 biased;
                 result = &mut shutdown => { result?; return Err(interrupted()); }
@@ -110,7 +107,7 @@ pub async fn run(
             standalone,
             guardian,
         } => {
-            use fedimint_light_node::guardian_rpc::{GuardianRpc, SYNTHETIC_STATUS_WARNING};
+            use fedimint_light_node::guardian_rpc::GuardianRpc;
             use fedimint_light_node::guardian_rpc_config::{GuardianRpcConfig, RpcAuth};
             let auth = if rpc_no_auth {
                 RpcAuth::NoAuth
@@ -128,14 +125,10 @@ pub async fn run(
                     return Err("--standalone cannot include guardian state".into());
                 }
                 crate::recovery::identity(&store, None)?;
-                tracing::info!(mode = "standalone", guardian_coordination = "absent");
+                tracing::info!(mode = "standalone");
             } else {
                 store.preflight_guardian(guardian.preflight(options.guardian_id)?)?;
-                tracing::info!(
-                    mode = "bound-guardian-manual",
-                    preflight = "passed",
-                    automatic_commit_coordination = "absent"
-                );
+                tracing::info!(mode = "bound-guardian-manual", preflight = "passed");
             }
             output::status(&store)?;
             let mut sync_config =
@@ -151,7 +144,7 @@ pub async fn run(
                 event = "explorer_headers",
                 enabled = sync.explorer_deadline().is_some(),
                 sources = network.explorer_config().roots.len(),
-                "periodic untrusted header transports; not checkpoints or a freshness guarantee"
+                "periodic explorer header configuration"
             );
             let rpc = GuardianRpc::bind(
                 GuardianRpcConfig {
@@ -164,36 +157,17 @@ pub async fn run(
             )
             .await?;
             tracing::info!(event = "rpc_listening", rpc_listen = %rpc.local_addr()?,
-                rpc_no_auth, fake_bitcoind, submission_only = allow_rpc_submission,
+                rpc_no_auth, fake_bitcoind, mempool, submission_only = allow_rpc_submission,
                 "RPC listener ready");
             if rpc_no_auth {
                 let addr = rpc.local_addr()?;
-                tracing::warn!(
-                    "read-only local RPC; any local process can query; do not forward this port"
-                );
-                tracing::info!(
+                tracing::debug!(
                     "bitcoin-cli -datadir=/tmp -conf=/dev/null -rpcconnect={} -rpcport={} getblockcount",
                     addr.ip(),
                     addr.port()
                 );
-                tracing::info!(
+                tracing::debug!(
                     "curl --noproxy '*' -H 'Content-Type: application/json' --data '{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getblockcount\",\"params\":[]}}' 'http://{addr}/'"
-                );
-            }
-            if fake_bitcoind {
-                tracing::warn!("{SYNTHETIC_STATUS_WARNING}");
-            }
-            if mempool {
-                tracing::warn!(
-                    "mempool observation is approximate, incomplete and unvalidated; latest 20 selected bodies are downloaded under bounded background budgets; presence is not acceptance, absence is not confirmation; getfeeobservations reports partial historical fee samples, not recommended fees"
-                );
-            }
-            tracing::warn!(
-                "guardian protection is NOT automatic; reads never advance durable protection"
-            );
-            if allow_rpc_submission {
-                tracing::warn!(
-                    "WARNING: submission-only; no input fee/burn checks, mempool or acceptance guarantee; cancellation may follow delivery"
                 );
             }
             let mut progress = crate::sync_progress::SyncProgress::default();
@@ -235,9 +209,6 @@ pub async fn run(
                 ),
             )?
             .with_fee_policy(fee_policy);
-            tracing::warn!(
-                "submission is a local write only; cancellation may follow delivery; explicit retry is allowed"
-            );
             let report = tokio::select! {
                 biased;
                 result = &mut shutdown => {
@@ -290,7 +261,7 @@ pub async fn run(
                     event = "explorer_headers",
                     enabled = sync.explorer_deadline().is_some(),
                     sources = network.explorer_config().roots.len(),
-                    "periodic untrusted header transports; not checkpoints or a freshness guarantee"
+                    "periodic explorer header configuration"
                 );
             }
             let mut progress = crate::sync_progress::SyncProgress::default();
@@ -308,7 +279,7 @@ pub async fn run(
                 progress.report(&sync)?;
                 match report.result {
                     Ok(end) => {
-                        tracing::debug!(?end, peer = ?report.peer, "visit completed; freshness unproven")
+                        tracing::debug!(?end, peer = ?report.peer, "visit completed")
                     }
                     Err(error) => {
                         tracing::debug!(%error, peer = ?report.peer, "visit failed");

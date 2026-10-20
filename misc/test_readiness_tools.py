@@ -30,7 +30,7 @@ class EvidenceSafety(unittest.TestCase):
         self.assertEqual(node_event(
             '2026-10-19T00:00:00Z INFO fedimint_light_node::operations: '
             'RPC listener ready event="rpc_listening" rpc_listen=127.0.0.1:1234 '
-            'rpc_no_auth=true fake_bitcoind=false submission_only=false\n'),
+            'rpc_no_auth=true fake_bitcoind=false mempool=false submission_only=false\n'),
             {"event": "rpc_listening", "address": "127.0.0.1:1234"})
         self.assertEqual(node_event(
             'INFO fedimint_light_node::sync_progress: selected chain summary '

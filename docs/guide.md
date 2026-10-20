@@ -1,26 +1,18 @@
 # Detailed operation and library guide
 
-An embeddable Rust Bitcoin backend for guardians that retain recent headers
-and retrieve complete blocks from peers without full consensus validation.
-This is a **research project** exploring the lightest practical Bitcoin node for
-Fedimint guardians without ceding security to third-party backends. That is the
-research goal, not a claim that the current trusted bootstrap eliminates
-third-party trust.
-This experimental implementation can bootstrap mainnet history, synchronize
-headers, retrieve complete blocks, and submit caller-supplied transactions.
-It exposes explicit static or unavailable fee information for embedding.
-**It is not a Bitcoin Core substitute,
-a full consensus validator, or a production-ready guardian backend.**
+This experimental Rust backend bootstraps mainnet history, synchronizes recent
+headers, retrieves complete blocks and submits caller-supplied transactions.
+It exposes fixed fee configuration and optional historical fee observations.
+See [security boundaries](../SECURITY.md) for the trust model and
+[guardian RPC](guardian-rpc.md) for integration contracts.
 
 ## Periodic explorer header candidates
 
 Normal startup, `serve` and ongoing `sync` enable two HTTPS transports:
-`https://mempool.space/api` and `https://blockstream.info/api`. These are **untrusted
-header candidates**, not checkpoints or a quorum. Any one source can supply a
-supported higher-work branch through the same contextual validation and atomic
+`https://mempool.space/api` and `https://blockstream.info/api`. Any one source can
+supply a supported higher-work branch through the same contextual validation and atomic
 selection as P2P, even when every P2P peer withholds headers. This adds defense in
-depth against P2P Sybil attacks; it cannot prove freshness, full consensus validity,
-independent operators or availability of the corresponding block bodies.
+depth against P2P withholding.
 
 Use `--no-explorer-headers` to disable this periodic traffic. Repeated
 `--header-explorer HTTPS_API_ROOT` replaces the defaults; roots must be
@@ -168,9 +160,7 @@ DB=./node-data/headers.redb
 
 Status prints the pinned mainnet height-one identity and checkpoint, selected tip
 height/hash and **count = height + 1**, inclusive retained bounds, capacity and
-protection height. It always labels freshness and body availability as unproven:
-an empty peer reply or a stored tip is not a health check. No wallet finality delay
-is subtracted. A retained block can still be unavailable from every configured peer.
+protection height and guardian binding. No wallet finality delay is subtracted.
 Only one process should own a database at a time: stop sync before running offline
 status, fetch, broadcast or protect against the same database. redb enforces exclusive opens.
 

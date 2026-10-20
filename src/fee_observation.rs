@@ -284,7 +284,7 @@ impl FeeObservation {
         tracing::debug!(event = "fee_observation", height, hash = %key.1,
             sampled = status.sampled_tx_count, resolved = status.resolved_tx_count,
             missing = status.tracked_missing_input_count, invalid = status.invalid_tx_count,
-            "historical unvalidated fee sample updated");
+            "historical fee sample updated");
     }
 
     /// Copy only a fixed-size summary; reads never redraw or refresh sample age.

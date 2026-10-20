@@ -238,7 +238,9 @@ async fn mempool_loopback_inventory_rpc_and_autonomous_selected_body_exclusion()
         assert_eq!(fee["result"]["sampled_tx_count"], 0);
         assert_eq!(fee["result"]["output_cache_entries"], 1);
         assert!(fee["result"]["subset_p50_sat_per_vb"].is_null());
-        assert_eq!(fee["result"]["trust"], "body_integrity_only");
+        for metadata in ["source", "trust", "warning"] {
+            assert!(fee["result"].get(metadata).is_none(), "{fee}");
+        }
     }
     assert_eq!(body_requests.load(Ordering::SeqCst), count);
     let fixed_policy = query_method(addr, "estimatesmartfee", json!([1, "CONSERVATIVE"])).await;
@@ -342,6 +344,12 @@ async fn pinned_guardian_client_status_fee_height_identity_and_no_protection() {
     let expected = sync.status().unwrap();
     let identity = sync.chain_id();
     let (addr, stop, task) = start(sync, true, false).await;
+    let body = json!({"jsonrpc":"2.0","id":1,"method":"getblockchaininfo","params":[]}).to_string();
+    let response = wire(addr, format!(
+        "POST / HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Basic Z3VhcmRpYW46c2VjcmV0\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()
+    ).as_bytes()).await;
+    let value: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(value["result"]["warnings"], json!([]));
     tokio::task::spawn_blocking(move || {
         let rpc = client(addr);
         assert_eq!(rpc.get_block_count().unwrap(), 8); // Fedimint adds one.

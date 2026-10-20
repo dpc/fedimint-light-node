@@ -228,7 +228,7 @@ impl HeaderSync {
             self.stopped |= error.is_terminal();
             self.explorers.as_mut().expect("reserved source").sources[index]
                 .fail(std::time::Duration::ZERO, true);
-            tracing::warn!(source = index, %error, "explorer candidate rejected; no new trust anchor");
+            tracing::warn!(source = index, %error, "explorer candidate rejected");
             if self.stopped {
                 return Err(error);
             }
@@ -302,7 +302,7 @@ impl HeaderSync {
                         source = index,
                         height = parent,
                         generation = self.generation,
-                        "higher-work explorer headers selected; freshness and body availability unproven"
+                        "higher-work explorer headers selected"
                     );
                 }
             }

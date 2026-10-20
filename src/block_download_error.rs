@@ -10,7 +10,7 @@ pub enum BlockDownloadError {
     #[error("invalid block download configuration")]
     Configuration,
     /// The requested height has been pruned or predates queryable history.
-    #[error("block is outside retained history; no archival recovery")]
+    #[error("block is outside retained history")]
     OutsideRetainedHistory,
     /// The requested height is above the selected tip.
     #[error("block height is beyond selected tip")]

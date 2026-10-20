@@ -10,7 +10,7 @@ ANSI color is enabled only when stderr is a terminal.
 The library emits events and async-safe spans but never installs a subscriber,
 runtime or global logging configuration. Targets follow Rust module paths under
 `fedimint_light_node`. Command results remain on `stdout`; help and version do not
-initialize logging. Query command hints remain on stderr at info level.
+initialize logging. Query command hints appear on stderr at debug level.
 
 ## Levels and fields
 
@@ -20,14 +20,13 @@ initialize logging. Query command hints remain on stderr at info level.
   most once per minute; individual transactions are not logged.
 - `debug`: normal peer acquisition, rotation, repeated visits, retry failures,
   RPC method/outcome/duration and bounded mempool coverage attempts.
-- `warn`: explicit safety choices and degraded availability/cache persistence.
+- `warn`: degraded availability/cache persistence and invalid log configuration.
   Repeated or flapping degradation warns at most once per minute per CLI owner.
 - `error`: fatal store/owner failures and unsuccessful command termination.
 
 Events use named fields for heights, hashes, peers, counts, durations and outcomes
-where available. None proves freshness, consensus validation, transaction
-acceptance or independent peer ownership. A selected-chain summary is not a
-heartbeat guarantee while synchronous work blocks the owner.
+where available. Routine output reports operational state, not static policy
+disclaimers. Trust and compatibility contracts live in the security and RPC guides.
 
 Do not record credentials, authorization headers, raw transaction/block bytes,
 arbitrary request bodies or unknown client-supplied method names. Instrumented

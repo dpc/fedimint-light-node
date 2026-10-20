@@ -1,10 +1,8 @@
 # Guardian operations and recovery
 
-**Bound mode is a manual safety checkpoint, not automatic guardian-finality
-coordination.** Standard Core RPC reads do not acknowledge a durable guardian
-commit. The unchanged Fedimint caller can advance past the protected floor and
-retries permanent retention errors. Do not treat a successful startup preflight
-as permission for unattended production operation.
+Bound mode checks an operator-supplied guardian checkpoint at startup.
+The caller-side commit coordination required for ongoing protection is described
+below.
 
 ## Identity and preflight
 
@@ -61,10 +59,10 @@ committed hash; arbitrary older hashes are not accepted just because their
 heights are smaller. Range errors are request-local, not global recovery latches.
 Ordinary reads never update protection, binding or guardian state.
 
-`serve --standalone` is explicitly unbound smoke/demo operation and refuses
+`serve --standalone` serves an unbound database and refuses
 bound state. `serve` without that flag requires all guardian arguments.
 `status` remains available offline without knowing the identifier, but reports
-it rather than claiming guardian readiness. Binding cannot be removed or changed.
+it. Binding cannot be removed or changed.
 
 ### The missing caller-side transaction boundary
 
@@ -79,7 +77,7 @@ adding an HTTP method alone cannot implement that database transaction ordering.
 The offline procedure above reconciles an operator checkpoint only. Stopping both
 processes, protecting, and restarting does **not** protect every future guardian
 commit. Do not bypass this limitation with periodic protection or automatic
-read-triggered acknowledgement. There is no deployment certification here.
+read-triggered acknowledgement.
 
 ## Service lifecycle and diagnostics
 
@@ -99,19 +97,16 @@ validation/database work still cannot be interrupted. The example's stop timeout
 can kill the process as an external backstop; inspect/reopen after forced exit.
 The embedding library retains caller-owned runtime and OS DNS limitations.
 
-Native `sync:` logs include observation time, selected height/hash, process-local
-generation, live connections, candidate count, queue depths, completed/canceled
-RPC totals, last RPC outcome code/time, last successful visit time and last
-selection-change time. These counters reset on restart, saturate instead of
-wrapping and use bounded fields without transaction bodies or arbitrary method
+Info-level synchronization summaries include selected height/hash, process-local
+generation, live connections and candidate count. Debug diagnostics also include
+queue depths, completed/canceled RPC totals, last RPC outcome code/time, last
+successful visit time and last selection-change time. These counters reset on
+restart, saturate instead of wrapping and use bounded fields without transaction bodies or arbitrary method
 labels. RPC totals cover only requests observed by the chain owner: completed
 dispatches and canceled queued/active work. Authentication, parsing and queue
 admission failures are excluded; these are not all HTTP traffic totals.
-They are not a durable audit log. A successful empty visit does not prove
-freshness. Low connection count and repeated parser/transport rejections deserve
-investigation; do not relax peer parsing to hide them. `stopped=true` or a fatal
-storage error requires operator intervention. Synthetic Core progress is never
-health evidence.
+Low connection count and repeated parser/transport rejections deserve
+investigation. `stopped=true` or a fatal storage error requires operator intervention.
 
 ## Stopped-store backup
 

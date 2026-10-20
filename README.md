@@ -24,7 +24,7 @@ unauthenticated RPC on `127.0.0.1:18443`**. Later runs reopen that state; they n
 reset or bootstrap over an existing file. State lives at
 `$XDG_STATE_HOME/fedimint-light-node/chain.redb`, or
 `~/.local/state/fedimint-light-node/chain.redb` when XDG state home is unset.
-Startup prints the path, synchronization progress and ready-to-copy queries.
+Startup prints the path, synchronization progress and RPC address.
 Operational logs use `tracing` on stderr at `info` by default; set
 `RUST_LOG=fedimint_light_node=debug` for detailed diagnostics. See the
 [logging policy](docs/logging.md) for levels, privacy and progress sampling.
@@ -37,12 +37,9 @@ bitcoin-cli -datadir=/tmp -conf=/dev/null -rpcconnect=127.0.0.1 -rpcport=18443 g
 
 No credentials or Bitcoin Core daemon are needed. The client options select an
 existing directory and an empty configuration instead of your local Core setup;
-they do not create a Core database. Any local
-process can query this endpoint; **do not forward its port**. Ctrl-C stops the
-node and preserves state. Initial bootstrap trusts configured HTTPS source
-agreement and needs Internet HTTPS, DNS and outbound Bitcoin P2P access; it can
-take minutes or fail when sources or peers are unavailable. This is not full
-Bitcoin validation or an automatic guardian integration.
+they do not create a Core database. Ctrl-C stops the node and preserves state.
+Initial bootstrap needs Internet HTTPS, DNS and outbound Bitcoin P2P access;
+it can take minutes or fail when sources or peers are unavailable.
 
 Optional overrides: `cargo run -- --db /trusted/path/chain.redb`,
 `cargo run -- --rpc-bind 127.0.0.1:0` for an available port, or
@@ -68,9 +65,8 @@ bitcoin-cli -datadir=/tmp -conf=/dev/null -rpcconnect=127.0.0.1 -rpcport=18443 g
 This default-off mode observes general transaction announcements, not a watch
 list. It also downloads recent selected block bodies under a background budget,
 keeps only keyed transaction fingerprints, and discards the bodies. The result
-is **bounded, incomplete and unvalidated**: presence is not acceptance, and absence
-is not confirmation. Startup has no existing network mempool snapshot. Diagnostics
-report local coverage and losses; an empty result is not an empty network mempool.
+starts empty and builds a bounded local sample. Diagnostics report coverage and
+losses.
 See the [observation limits](docs/guardian-rpc.md#approximate-mempool-observation).
 
 The same mode reports **partial historical fee observations**, without fetching
@@ -80,9 +76,8 @@ extra blocks or parent transactions:
 bitcoin-cli -datadir=/tmp -conf=/dev/null -rpcconnect=127.0.0.1 -rpcport=18443 getfeeobservations
 ```
 
-This is not a recommended fee or confirmation-target estimate. Missing parents
-can bias the resolved subset; check coverage and sample-median bounds, not just
-the median. See [fee observation semantics](docs/guardian-rpc.md#historical-fee-observations).
+The result includes missing-parent counts, coverage and sample-median bounds.
+See [fee observation semantics](docs/guardian-rpc.md#historical-fee-observations).
 
 ## Why this fits Fedimint
 
@@ -94,11 +89,8 @@ threshold. Guardians can use different backends and sources to reduce shared
 failure modes. They still fetch block bodies independently; consensus on a count
 is not agreement on a block hash or validation of its contents.
 
-These properties motivate a smaller backend, not a replacement for Bitcoin's
-validation rules. The current bootstrap trusts agreement between HTTPS sources;
-later public-source headers must pass the same local checks as P2P headers.
-Neither header validation nor federation consensus checks Bitcoin scripts or
-UTXO validity, and shared source failures and eclipse attacks remain risks. See
+The current bootstrap uses agreement between HTTPS sources; later public-source
+headers pass the same local checks as P2P headers. See
 the [security boundaries](SECURITY.md) for the current trust model.
 
 ## What works today
@@ -112,14 +104,12 @@ available. Discovery supplies availability hints, never chain authority.
 Periodic [Esplora header candidates](docs/guide.md#periodic-explorer-header-candidates)
 add independent, low-rate defense against P2P withholding. They pass the same
 contextual validation and work selection as P2P, not a reputation-based quorum.
-This bounded shallow defense does not guarantee freshness or deep recovery.
 
 The loopback [guardian RPC profile](docs/guardian-rpc.md), with optional authentication,
 supports the narrow Fedimint client profile. `--fake-bitcoind` explicitly enables
-synthetic Core status; it does not establish freshness or validation.
-There is **no full consensus validation, UTXO set, wallet-history service, inbound
-P2P listener or automatic guardian finality binding**. This is not yet a production-ready
-guardian backend or a substitute for Bitcoin Core's validation.
+synthetic Core status.
+Validation covers contextual headers and block integrity. UTXO/script validation
+and automatic guardian commit coordination remain outside the current implementation.
 
 ## How does this compare?
 
@@ -170,10 +160,6 @@ commands; this also suppresses default periodic explorers, but not initial
 bootstrap HTTPS. Explicit `--header-explorer HTTPS_API_ROOT` opts back in.
 `status` inspects a stopped node offline. Only one process should own
 the database at a time.
-
-Selected height is not proof of freshness or consensus validity. Inspect the
-trust assumptions before relying on any result, and do not broadcast real
-transactions merely to test connectivity.
 
 ## Learn more
 

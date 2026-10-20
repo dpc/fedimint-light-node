@@ -1,13 +1,12 @@
 # Bounded transaction submission
 
-`HeaderSync::submit_transaction` fills the outbound transaction operation without
-adding a mempool, wallet, fee estimator, queue or guardian adapter. It borrows the
-same owner exclusively as header synchronization and body retrieval. One call owns
+`HeaderSync::submit_transaction` borrows the same owner exclusively as header
+synchronization and body retrieval. One call owns
 at most one leased socket and one serialized payload, tries pool peers sequentially,
 and never modifies the chain store. Repeating a call explicitly rebroadcasts.
 Idle connections remain maintained under the separate bounded pool control budget.
 
-## Observations, not acceptance
+## Submission reports
 
 An admission error occurs before networking or outbound payload allocation.
 Otherwise the report includes transaction identifiers, every selected peer, whether
@@ -16,16 +15,14 @@ its payload write started, its write result and an optional post-write observati
 ping, peer disconnect or deadline fails. An `Ok` report with count zero is not a
 successful submission. CLI exit success requires a positive count.
 
-There is no transaction acceptance acknowledgement. A completed write does not
-prove receipt, validation, mempool entry, propagation or confirmation. After writing,
-the client sends a fresh-nonce ping and waits for the matching pong under at most
-two seconds and the existing visit/total deadlines, with at most 32 received frames.
-This drains queued control messages to reduce premature closing with unread data;
-it cannot guarantee graceful close or transaction processing. Unrelated pongs do
+After writing, the client sends a fresh-nonce ping and waits for the matching pong
+under at most two seconds and the existing visit/total deadlines, with at most 32 received frames.
+This drains queued control messages to reduce premature closing with unread data.
+The pong is a transport observation, not transaction acceptance. Unrelated pongs do
 not satisfy the observation. Timeout or another failure never erases a completed
 write. Dropping the future closes its current socket and loses the whole report:
 earlier or in-progress delivery may already have happened. The caller decides when
-to retry; no exactly-once or automatic rebroadcast promise exists.
+to retry.
 
 ## Bounds and admission
 

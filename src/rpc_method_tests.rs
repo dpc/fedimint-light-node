@@ -4,6 +4,19 @@ use crate::fee_policy::FeePolicy;
 use crate::rpc_method::fee_value;
 
 #[test]
+fn unavailable_errors_only_discuss_submission_for_submission() {
+    let read = crate::rpc_method::RpcError::unavailable();
+    let submission = crate::rpc_method::RpcError::submission_unavailable();
+    assert_eq!(read.code, submission.code);
+    assert!(!read.message.contains("submission"));
+    assert!(
+        submission
+            .message
+            .contains("submission may be indeterminate")
+    );
+}
+
+#[test]
 fn logging_names_do_not_echo_unknown_methods_or_parameters() {
     for (method, expected) in [
         ("getblock", "getblock"),

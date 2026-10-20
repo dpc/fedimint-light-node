@@ -14,7 +14,7 @@ use fedimint_light_node::sync_config::SyncConfig;
 #[derive(Clone, Debug, Parser)]
 #[command(
     version,
-    about = "Mainnet light node: with no command, open or bootstrap persistent state, sync and serve read-only localhost RPC. Not a full consensus validator."
+    about = "Mainnet light node: with no command, open or bootstrap persistent state, sync and serve read-only localhost RPC."
 )]
 pub struct Options {
     /// Database path; normal startup defaults to $XDG_STATE_HOME/fedimint-light-node/chain.redb.
@@ -133,7 +133,7 @@ pub enum Command {
         /// Snapshot integrity and identity manifest.
         #[arg(long)]
         manifest: PathBuf,
-        /// Independent current checkpoint, NOT a copy derived from this backup.
+        /// Independently current checkpoint used to verify the restore.
         #[arg(long)]
         expected_state: PathBuf,
     },
@@ -143,7 +143,7 @@ pub enum Command {
         network: Network,
         #[command(flatten)]
         rpc: RpcOptions,
-        /// Explicit unbound service; never a guardian-finality integration.
+        /// Serve an unbound database.
         #[arg(long)]
         standalone: bool,
         /// Bound guardian startup evidence, required unless --standalone.
@@ -187,7 +187,7 @@ pub enum Command {
         #[arg(long, default_value_t = 120, value_parser = clap::value_parser!(u64).range(1..=120))]
         total_seconds: u64,
     },
-    /// Write a transaction to up to three peers; no acceptance/confirmation guarantee.
+    /// Write a transaction to up to three peers.
     Broadcast {
         #[command(flatten)]
         network: Network,
@@ -215,7 +215,7 @@ pub enum Command {
 /// RPC flags shared by normal startup and explicit serving.
 #[derive(Clone, Debug, Args)]
 pub struct RpcOptions {
-    /// Observe an unvalidated mempool and historical fee samples from recent bodies.
+    /// Observe a mempool and historical fee samples from recent bodies.
     #[arg(long)]
     pub mempool: bool,
     /// Numeric loopback listen address; use port 0 to select an available port.
@@ -227,10 +227,10 @@ pub struct RpcOptions {
     /// Allow read-only local RPC without credentials (normal startup default).
     #[arg(long, conflicts_with = "allow_rpc_submission")]
     pub rpc_no_auth: bool,
-    /// Opt in to synthetic Core status, NOT validation, freshness or readiness.
+    /// Enable synthetic Core status compatibility.
     #[arg(long)]
     pub fake_bitcoind: bool,
-    /// Enable submission-only sendrawtransaction WITHOUT Core fee/burn safeguards.
+    /// Enable write-only sendrawtransaction RPC.
     #[arg(long, requires = "rpc_credentials")]
     pub allow_rpc_submission: bool,
 }

@@ -35,7 +35,7 @@ impl SyncProgress {
             tracing::info!(event = "sync_progress", selected_height = status.height,
                 selected_hash = %status.hash, generation = status.generation,
                 connections, candidates, cache_failed, stopped = status.stopped,
-                freshness = "unproven", "selected chain summary");
+                "selected chain summary");
         }
         Ok(())
     }

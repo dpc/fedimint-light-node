@@ -27,9 +27,6 @@ use crate::guardian_rpc_config::{GuardianRpcConfig, RpcAuth};
 use crate::header_sync::HeaderSync;
 use crate::rpc_method::{RpcError, RpcRequest, dispatch, fee_value};
 
-/// Fields deliberately synthesized only when `fake_bitcoind` is enabled.
-pub const SYNTHETIC_STATUS_WARNING: &str = "fake-bitcoind: synthetic difficulty=1, mediantime=0, verificationprogress=1, initialblockdownload=false, chainwork=zero, size_on_disk=0, pruned=true, version=190000; NOT full validation, freshness, absolute work, Core pruning or mempool acceptance";
-
 /// Observation trades polling latency for a usable body slice, never changes due priority.
 fn sync_interval(mempool: bool) -> Duration {
     Duration::from_secs(if mempool { 5 } else { 1 })
@@ -203,7 +200,7 @@ impl GuardianRpc {
                         tracing::info!(
                             event = "mempool_summary",
                             ?status,
-                            "approximate, incomplete and unvalidated observation"
+                            "mempool observation summary"
                         );
                         next_mempool_summary = Instant::now() + Duration::from_secs(60);
                     }
@@ -277,7 +274,13 @@ impl GuardianRpc {
                     },
                     result = timeout(Duration::from_secs(6),
                         dispatch(&mut self.sync, &pending.request, self.fake, self.submission)) =>
-                        result.unwrap_or_else(|_| Err(RpcError::unavailable())),
+                        result.unwrap_or_else(|_| Err(
+                            if pending.request.log_method() == "sendrawtransaction" {
+                                RpcError::submission_unavailable()
+                            } else {
+                                RpcError::unavailable()
+                            }
+                        )),
                 };
                 completed = completed.saturating_add(1);
                 last_code = result.as_ref().err().map_or(0, |error| error.code);

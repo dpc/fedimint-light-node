@@ -9,7 +9,6 @@ use crate::block_decode::BlockDecodeLimits;
 use crate::block_download_config::BlockDownloadConfig;
 use crate::block_download_error::BlockDownloadError;
 use crate::fee_policy::FeePolicy;
-use crate::guardian_rpc::SYNTHETIC_STATUS_WARNING;
 use crate::header_sync::HeaderSync;
 use crate::store_error::StoreError;
 use crate::transaction_decode::decode_transaction;
@@ -92,6 +91,9 @@ impl RpcError {
         }
     }
     pub(crate) fn unavailable() -> Self {
+        Self::new(-32012, "peer/operation deadline or unavailable")
+    }
+    pub(crate) fn submission_unavailable() -> Self {
         Self::new(
             -32012,
             "peer/operation deadline or unavailable; submission may be indeterminate",
@@ -115,9 +117,7 @@ impl RpcError {
 
 fn storage(error: StoreError) -> RpcError {
     match error {
-        StoreError::OutsideRetainedHistory => {
-            RpcError::new(-32010, "outside retained history; no archival recovery")
-        }
+        StoreError::OutsideRetainedHistory => RpcError::new(-32010, "outside retained history"),
         StoreError::BeyondTip => RpcError::new(-8, "height beyond selected tip"),
         _ => RpcError::recovery(),
     }
@@ -162,9 +162,6 @@ pub(crate) async fn dispatch(
                 RpcError::new(-32601, "fee observation disabled; enable --mempool")
             })?;
             Ok(json!({
-                "source": "recent_selected_block_sample",
-                "trust": "body_integrity_only",
-                "warning": "Historical, unvalidated, partially resolved sample; not a recommended fee or confirmation-target estimate.",
                 "block_hash": s.block_hash.map(|h| h.to_string()),
                 "height": s.height,
                 "selected_tip_hash": s.selected_tip_hash.map(|h| h.to_string()),
@@ -226,7 +223,7 @@ pub(crate) async fn dispatch(
             "bestblockhash": status.hash.to_string(), "difficulty": 1.0, "mediantime": 0,
             "verificationprogress": 1.0, "initialblockdownload": false,
             "chainwork": "0000000000000000000000000000000000000000000000000000000000000000",
-            "size_on_disk": 0, "pruned": true, "warnings": [SYNTHETIC_STATUS_WARNING]
+            "size_on_disk": 0, "pruned": true, "warnings": []
         })),
         "getnetworkinfo" if p.is_empty() && fake => {
             Ok(json!({"version": 190000, "subversion": "/fedimint-light-node:fake-bitcoind/"}))
@@ -281,7 +278,7 @@ pub(crate) async fn dispatch(
         }
         "sendrawtransaction" if !submission => Err(RpcError::new(
             -32601,
-            "submission-only RPC requires --allow-rpc-submission; no Core fee guards",
+            "transaction submission requires --allow-rpc-submission",
         )),
         "sendrawtransaction" if p.len() == 1 => {
             let hex = p[0]
@@ -299,9 +296,9 @@ pub(crate) async fn dispatch(
             let report = sync
                 .submit_transaction(&transaction, config)
                 .await
-                .map_err(|_| RpcError::unavailable())?;
+                .map_err(|_| RpcError::submission_unavailable())?;
             if report.submitted() == 0 {
-                return Err(RpcError::unavailable());
+                return Err(RpcError::submission_unavailable());
             }
             Ok(json!(report.txid.to_string()))
         }

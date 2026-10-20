@@ -14,7 +14,7 @@ use crate::Result;
 pub fn fee_policy(policy: FeePolicy) -> Result<()> {
     let mut out = io::stdout().lock();
     match policy {
-        FeePolicy::Unavailable => writeln!(out, "fee_policy=unavailable")?,
+        FeePolicy::Unavailable => {}
         FeePolicy::Fixed { sats_per_kvb } => {
             writeln!(out, "fee_policy=fixed-operator-supplied")?;
             writeln!(out, "fee_sats_per_kvb={sats_per_kvb}")?;
@@ -48,16 +48,12 @@ pub fn submission(report: &TransactionSubmissionReport) -> Result<()> {
                 "peer={} post_write={}",
                 attempt.peer,
                 match result {
-                    Ok(()) => "pong-not-acceptance".to_owned(),
+                    Ok(()) => "pong".to_owned(),
                     Err(error) => error.to_string(),
                 }
             )?;
         }
     }
-    writeln!(
-        out,
-        "acceptance=unproven propagation=unproven confirmation=unproven"
-    )?;
     Ok(())
 }
 
@@ -98,14 +94,6 @@ pub fn status(store: &ValidatedHeaderStore) -> Result<()> {
             .map(|id| bitcoin::hashes::sha256::Hash::from_byte_array(id).to_string())
             .unwrap_or_else(|| "unbound".into())
     )?;
-    writeln!(
-        out,
-        "local_state=open-verified guardian_readiness=requires-current-preflight"
-    )?;
-    writeln!(out, "freshness=unproven")?;
-    writeln!(out, "sync_progress=unavailable")?;
-    writeln!(out, "body_availability=unproven")?;
-    writeln!(out, "validation=mechanical-not-full-consensus")?;
     Ok(())
 }
 

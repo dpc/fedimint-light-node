@@ -52,14 +52,14 @@ pub async fn bootstrap(
         event = "bootstrap_started",
         sources = config.sources.len(),
         quorum = config.quorum,
-        "initial checkpoint bootstrap; source trust is required"
+        "initial checkpoint bootstrap"
     );
     let (anchor, headers) = timeout(config.total_timeout, async {
         let (anchor, source) = agree(&config, &mut http, now).await?;
         tracing::info!(
             event = "checkpoint_agreed",
             height = anchor.height,
-            "sources agreed; freshness and consensus remain unproven"
+            "checkpoint sources agreed"
         );
         let floor = anchor
             .height
