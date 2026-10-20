@@ -58,13 +58,26 @@ See the [fee policy and qualification rules](docs/guardian-rpc.md#fee-policy-for
 
 ## Why this fits Fedimint
 
-Fedimint needs a narrow slice of Bitcoin data, and its finality delay leaves time
-to compare chains before consuming blocks. Guardians agree block counts through
-federation consensus, so misleading one guardian about the count is not enough
-to determine the federation's result: an attacker needs to mislead a consensus
-threshold. Guardians can use different backends and sources to reduce shared
-failure modes. They still fetch block bodies independently; consensus on a count
-is not agreement on a block hash or validation of its contents.
+Fedimint's guardian model makes a small Bitcoin backend especially useful:
+
+* **Federation resilience.** Guardians establish Byzantine fault-tolerant (BFT)
+  consensus on the chain progress they consume, using agreed block counts.
+  One misled guardian does not determine that result. Different guardian backends
+  and sources reduce shared failure modes.
+* **Time to compare chains.** Guardians trail the chain tip by a finality delay,
+  giving their backends time to discover competing branches before consuming blocks.
+* **Recent blocks, not an archive.** Normal operation needs relatively few recent
+  blocks as the federation advances. On-demand bodies and bounded retained ancestry
+  fit that workload without a historical block database.
+* **Shared fee estimation.** Fee estimates already combine inputs from multiple
+  guardians through federation consensus. Guardians can use different fee backends,
+  so one light node's estimate is only one input.
+* **Best-effort mempool.** Guardians use mempool visibility for pending-deposit UX.
+  A bounded observed view can show progress before confirmation; settlement follows
+  confirmed blocks and federation consensus.
+
+See the [guardian workload](docs/guide.md#guardian-workload) and
+[fee-source integration](docs/guardian-rpc.md#fedimint-fee-sources) for details.
 
 ## Try it
 

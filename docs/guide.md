@@ -6,6 +6,28 @@ It exposes fixed fee configuration and optional historical fee observations.
 See [security boundaries](../SECURITY.md) for the trust model and
 [guardian RPC](guardian-rpc.md) for integration contracts.
 
+## Guardian workload
+
+Fedimint guardians use BFT consensus to agree how far to advance through the
+chain. Their block-count votes include a finality delay, leaving time for
+independent backends to discover competing branches. Backend and source diversity
+helps keep one guardian's faulty view from becoming a shared failure.
+
+In steady state, guardians consume newly finalized blocks and a small recent
+window for pending-deposit progress. Walletv2 starts at the federation's initial
+agreed count rather than scanning pre-federation history on mainnet. Catch-up
+after downtime also needs the intervening blocks. Size retained ancestry for
+the guardian's needed range and recovery margin; the default 52,560-header store
+is separate from the twenty-block background observation window. Complete bodies
+arrive on demand and are discarded after use.
+
+Fee estimates combine guardian votes, and optional mempool observation serves
+pending-deposit UX. These properties let the backend focus on recent chain data
+and bounded observations. The [RPC guide](guardian-rpc.md#fedimint-fee-sources)
+describes the fee-source selection and pending-deposit interface at the pinned
+Fedimint revision. The [implementation status](implementation-status.md) separates
+this workload from the integration currently implemented here.
+
 ## Periodic explorer header candidates
 
 Normal startup, `serve` and ongoing `sync` enable two HTTPS transports:

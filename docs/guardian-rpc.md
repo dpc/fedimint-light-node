@@ -72,6 +72,11 @@ numeric IPv4 or IPv6 loopback binds. Do not expose or forward the listener.
 
 ## Approximate mempool observation
 
+Fedimint walletv2 uses mempool transactions to show pending-deposit progress.
+Its pending receive scanner runs outside consensus and accepts partial or
+unavailable mempool results; confirmed blocks drive settlement. Best-effort
+visibility therefore fits this UX without requiring a complete local mempool.
+
 `cargo run -- --mempool` enables general legacy transaction announcements and
 bounded background downloads toward the latest twenty retained selected bodies.
 Explicit serving also accepts `serve --mempool`. The library equivalent is
@@ -197,6 +202,42 @@ round-trip. Reads do not fetch, redraw, refresh age or change coverage. Fedimint
 Core adapter converts the BTC amount directly to sat/kvB; the node applies no
 wallet multiplier. Walletv1 can use its configured fallback for `None`; walletv2
 retracts that guardian's fee vote.
+
+### Fedimint fee sources
+
+At the Fedimint revision pinned above, federation fee estimation already
+aggregates multiple guardians' votes: walletv1 selects the median (with configured
+defaults for missing votes), while walletv2 selects a threshold order statistic
+from available votes. Guardians can use different backends to diversify those
+inputs.
+
+Each guardian's `ServerBitcoinRpcMonitor::fetch_status` obtains a fee estimate
+from its configured server backend. `fedimintd` selects Core, Esplora, or hybrid
+according to the supplied URLs. With both configured, hybrid `get_feerate` tries
+Core first and falls back to Esplora on an error or unavailable estimate.
+Federation aggregation is automatic; this per-guardian fallback depends on
+configuration. The light node supplies one backend estimate through
+`estimatesmartfee`, alongside the federation's other guardian inputs.
+
+Earlier Fedimint versions also combined sources within each guardian by default.
+On mainnet, the fee task concurrently queried the configured Bitcoin RPC,
+`https://mempool.space/api/v1/fees/recommended` (`hourFee`), and
+`https://blockstream.info/api/fee-estimates` (target `1`), then took the median
+of available last-successful rates. `FM_WALLET_FEERATE_SOURCES` overrode the
+external list. Commit `5412cc99ae22ed906a51abffe01313382a2b9fcb`
+(April 14, 2025) replaced that wallet fee task with the server monitor above;
+`0e7c7da5a17523c1e0d79c0d5ae298aa6607229b` (April 25, 2025) removed the unused
+source machinery. That per-instance multi-source default is distinct from
+the federation aggregation still present at the pinned revision.
+
+The source paths are `fedimint-server-core/src/bitcoin_rpc.rs`,
+`fedimintd/src/lib.rs`, `fedimint-server-bitcoin-rpc/src/hybrid.rs`, and the
+`consensus_fee_rate` / `consensus_feerate` methods in
+`modules/fedimint-wallet-server/src/lib.rs` and
+`modules/fedimint-walletv2-server/src/lib.rs`. The latter wallet's
+`src/pending.rs` implements the separate pending-deposit UX.
+
+### Historical sample construction
 
 Each newly inspected body newer than the active sample supplies one uniform
 sample without replacement: up to 128 transactions, excluding coinbase. Selection
