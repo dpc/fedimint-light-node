@@ -91,12 +91,14 @@ async fn mempool_loopback_inventory_rpc_and_autonomous_selected_body_exclusion()
     use bitcoin::hashes::Hash;
     use bitcoin::p2p::message_blockdata::Inventory;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let allow_body = Arc::new(AtomicBool::new(false));
     let serve_body = allow_body.clone();
+    let body_requests = Arc::new(AtomicUsize::new(0));
+    let counted_requests = body_requests.clone();
     let block = genesis_block(Network::Bitcoin);
     let confirmed = block.txdata[0].compute_txid();
     let pending = bitcoin::Txid::from_byte_array([7; 32]);
@@ -143,6 +145,7 @@ async fn mempool_loopback_inventory_rpc_and_autonomous_selected_body_exclusion()
                         .await;
                     }
                     NetworkMessage::GetData(items) => {
+                        counted_requests.fetch_add(1, Ordering::SeqCst);
                         assert_eq!(items, vec![Inventory::WitnessBlock(block.block_hash())]);
                         if serve_body.load(Ordering::SeqCst) {
                             // A healthy body slower than the disabled-mode one-second
@@ -195,14 +198,19 @@ async fn mempool_loopback_inventory_rpc_and_autonomous_selected_body_exclusion()
         },
     ));
     async fn query(addr: SocketAddr, params: Value) -> Value {
-        let body =
-            json!({"jsonrpc":"2.0", "id":1, "method":"getrawmempool", "params":params}).to_string();
+        query_method(addr, "getrawmempool", params).await
+    }
+    async fn query_method(addr: SocketAddr, method: &str, params: Value) -> Value {
+        let body = json!({"jsonrpc":"2.0", "id":1, "method":method, "params":params}).to_string();
         let response = wire(addr, format!(
             "POST / HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()
         ).as_bytes()).await;
         serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap()
     }
     let initial = query(addr, json!([])).await;
+    let fee_warmup = query_method(addr, "getfeeobservations", json!([])).await;
+    assert!(fee_warmup["result"]["block_hash"].is_null());
+    assert_eq!(fee_warmup["result"]["stale"], true);
     assert!(
         initial["result"]
             .as_array()
@@ -216,6 +224,29 @@ async fn mempool_loopback_inventory_rpc_and_autonomous_selected_body_exclusion()
     assert_eq!(
         query(addr, json!([false])).await["result"],
         json!([pending.to_string()])
+    );
+    // This is a real admitted selected mainnet body over loopback P2P, not a
+    // synthetic header bypass. Genesis has no non-coinbase rates to resolve.
+    let count = body_requests.load(Ordering::SeqCst);
+    for _ in 0..3 {
+        let fee = query_method(addr, "getfeeobservations", json!([])).await;
+        assert_eq!(
+            fee["result"]["block_hash"],
+            genesis_block(Network::Bitcoin).block_hash().to_string()
+        );
+        assert_eq!(fee["result"]["body_coverage_complete"], 1);
+        assert_eq!(fee["result"]["sampled_tx_count"], 0);
+        assert_eq!(fee["result"]["output_cache_entries"], 1);
+        assert!(fee["result"]["subset_p50_sat_per_vb"].is_null());
+        assert_eq!(fee["result"]["trust"], "body_integrity_only");
+    }
+    assert_eq!(body_requests.load(Ordering::SeqCst), count);
+    let fixed_policy = query_method(addr, "estimatesmartfee", json!([1, "CONSERVATIVE"])).await;
+    assert!(fixed_policy["result"]["feerate"].is_null());
+    assert!(fixed_policy["result"]["errors"].is_array());
+    assert_eq!(
+        query_method(addr, "getfeeobservations", json!([false])).await["error"]["code"],
+        -32602
     );
     let first = visit_times.recv().await.unwrap();
     let second = visit_times.recv().await.unwrap();
@@ -371,6 +402,12 @@ async fn default_off_and_strict_json_dialect() {
         let rpc = client(addr);
         assert!(
             rpc.call::<Value>("getrawmempool", &[])
+                .unwrap_err()
+                .to_string()
+                .contains("--mempool")
+        );
+        assert!(
+            rpc.call::<Value>("getfeeobservations", &[])
                 .unwrap_err()
                 .to_string()
                 .contains("--mempool")

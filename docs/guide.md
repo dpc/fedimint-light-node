@@ -124,6 +124,10 @@ and a mainnet walkthrough. There is no validated mempool or fee estimator.
 Explicit `--mempool` adds a bounded, unvalidated
 [transaction observation view](guardian-rpc.md#approximate-mempool-observation)
 and background recent-body downloads; it remains off by default.
+The same opt-in mode exposes
+[historical fee observations](guardian-rpc.md#historical-fee-observations) from
+already inspected blocks, with missing-input diagnostics and fixed-sample median
+bounds. Fee observation makes no additional requests and does not change fee policy.
 The intended boundaries are described in
 [ARCH-fedimint-light-node](../specs/ARCH-fedimint-light-node.md).
 

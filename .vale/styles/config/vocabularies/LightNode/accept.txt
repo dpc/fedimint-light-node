@@ -78,7 +78,7 @@ bitcoind
 pipelining
 serde
 softfork
-txid
+txids?
 runbooks?
 rescans?
 systemd's
@@ -94,3 +94,5 @@ libFuzzer
 FDs
 prebootstrapped
 locktime
+quantiles?
+untracked

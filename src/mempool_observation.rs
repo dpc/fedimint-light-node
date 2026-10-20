@@ -49,6 +49,8 @@ pub struct MempoolObservationStatus {
 
 /// Owner-only cache; sockets communicate through a separately bounded inbox.
 pub(crate) struct MempoolObservation {
+    /// Historical fee arithmetic shares admitted bodies, never download scheduling.
+    fees: crate::fee_observation::FeeObservation,
     /// Full identities needed for the RPC response.
     pending: BTreeMap<Txid, Observation>,
     /// One index entry per pending transaction, never a lazy unbounded queue.
@@ -73,6 +75,7 @@ impl MempoolObservation {
     /// Create an empty, unpersisted observation view.
     pub fn new() -> Self {
         Self {
+            fees: crate::fee_observation::FeeObservation::new(),
             pending: BTreeMap::new(),
             idle: BTreeSet::new(),
             age: BTreeSet::new(),
@@ -88,6 +91,7 @@ impl MempoolObservation {
     /// Reconcile full identities before observations, body ingestion or snapshots.
     pub fn reconcile(&mut self, selected: Vec<(u64, BlockHash)>) {
         assert!(selected.len() <= 20);
+        self.fees.reconcile(&selected);
         self.buckets.retain(|key, _| selected.contains(key));
         self.selected = selected;
         // Disconnected/expired buckets never manufacture pending transactions.
@@ -161,8 +165,9 @@ impl MempoolObservation {
         self.age.insert((now, txid));
     }
 
-    /// Extract fingerprints only from an already mechanically admitted selected body.
+    /// Extract fingerprints and fee metadata only from an admitted selected body.
     pub fn ingest(&mut self, height: u64, block: &Block) {
+        self.fees.ingest(height, block);
         let key = (height, block.block_hash());
         if !self.selected.contains(&key) || self.buckets.contains_key(&key) {
             return;
@@ -203,6 +208,12 @@ impl MempoolObservation {
     /// Copy at most MAX_PENDING txids; callers must separately bound reply copies.
     pub fn snapshot(&self) -> Vec<Txid> {
         self.pending.keys().copied().collect()
+    }
+
+    /// Historical selected-body arithmetic, not mempool policy or an estimator.
+    pub fn fee_status(&self) -> crate::fee_observation_status::FeeObservationStatus {
+        self.fees
+            .status(Instant::now(), self.buckets.len(), self.selected.len())
     }
 
     /// Report local state and losses without asserting freshness or coverage completeness.

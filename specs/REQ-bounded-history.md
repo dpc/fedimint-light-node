@@ -2,6 +2,12 @@
 
 ## Status
 
+Optional historical fee observations share existing selected-body inspections,
+with no additional fetching or archival parent recovery. A separately bounded
+amount cache and fixed sample retain metadata only; missing inputs remain explicit.
+The [RPC guide](../docs/guardian-rpc.md#historical-fee-observations) defines their
+logical allocation, coverage, provenance and expiration limits.
+
 The library implements inclusive retention-range arithmetic and atomic pruning
 of persisted canonical headers to an explicit capacity, with an explicit redb
 cache budget and bounded record decoding. Storage reports out-of-history

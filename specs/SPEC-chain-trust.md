@@ -125,6 +125,12 @@ never be described as fully validated.
 
 ## Residual trust
 
+Optional historical fee samples add checked amount arithmetic over already admitted
+selected bodies, not spend validation. Parent txids bind output amounts without
+proving unspentness or legal spending. Missing amounts must stay unknown; detected
+contradictions invalidate the observation. The native read-only view must not
+change fixed/unavailable fee policy or imply confirmation-target estimation.
+
 Bootstrap sources can agree on a bad anchor. PoW and local mechanical checks
 do not eliminate eclipse attacks or consensus-invalid high-work chains.
 Guardians sharing sources, peers, or this implementation can fail together;

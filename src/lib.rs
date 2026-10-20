@@ -29,6 +29,8 @@ mod explorer_headers;
 mod explorer_http;
 #[cfg(test)]
 mod explorer_test_support;
+mod fee_observation;
+pub mod fee_observation_status;
 pub mod fee_policy;
 pub mod frame_error;
 pub mod guardian_binding;
@@ -42,6 +44,7 @@ mod idle_peer;
 pub mod integrity_error;
 mod inventory_observer;
 pub mod mempool_observation;
+mod output_amount_cache;
 mod peer_addr_wire;
 mod peer_address;
 mod peer_book;

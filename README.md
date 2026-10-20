@@ -73,6 +73,17 @@ is not confirmation. Startup has no existing network mempool snapshot. Diagnosti
 report local coverage and losses; an empty result is not an empty network mempool.
 See the [observation limits](docs/guardian-rpc.md#approximate-mempool-observation).
 
+The same mode reports **partial historical fee observations**, without fetching
+extra blocks or parent transactions:
+
+```sh
+bitcoin-cli -datadir=/tmp -conf=/dev/null -rpcconnect=127.0.0.1 -rpcport=18443 getfeeobservations
+```
+
+This is not a recommended fee or confirmation-target estimate. Missing parents
+can bias the resolved subset; check coverage and sample-median bounds, not just
+the median. See [fee observation semantics](docs/guardian-rpc.md#historical-fee-observations).
+
 ## Why this fits Fedimint
 
 Fedimint needs a narrow slice of Bitcoin data, and its finality delay leaves time

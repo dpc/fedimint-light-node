@@ -185,7 +185,7 @@ pub async fn run(
             }
             if mempool {
                 tracing::warn!(
-                    "mempool observation is approximate, incomplete and unvalidated; latest 20 selected bodies are downloaded under bounded background budgets; presence is not acceptance, absence is not confirmation"
+                    "mempool observation is approximate, incomplete and unvalidated; latest 20 selected bodies are downloaded under bounded background budgets; presence is not acceptance, absence is not confirmation; getfeeobservations reports partial historical fee samples, not recommended fees"
                 );
             }
             tracing::warn!(

@@ -122,7 +122,7 @@ impl HeaderSync {
         Self::new_with_mempool(store, config, false)
     }
 
-    /// Explicitly opt into legacy transaction observation and bounded body coverage.
+    /// Opt into legacy transaction observations, historical fee samples and body coverage.
     ///
     /// This does not validate a mempool or persist transactions. The caller must
     /// drive `cover_mempool` between higher-priority work; RPC serving does so.
@@ -352,6 +352,17 @@ impl HeaderSync {
     pub fn mempool_snapshot(&mut self) -> Result<Option<Vec<bitcoin::Txid>>, StoreError> {
         self.refresh_mempool()?;
         Ok(self.mempool.as_ref().map(|cache| cache.snapshot()))
+    }
+
+    /// Return historical, partial, unvalidated fee observations, or None when disabled.
+    ///
+    /// Enabled by `new_with_mempool`; this read never fetches parents or blocks,
+    /// redraws samples, changes coverage priority, or changes `fee_policy`.
+    pub fn fee_observations(
+        &mut self,
+    ) -> Result<Option<crate::fee_observation_status::FeeObservationStatus>, StoreError> {
+        self.refresh_mempool()?;
+        Ok(self.mempool.as_ref().map(|cache| cache.fee_status()))
     }
 
     /// Report native approximate-view coverage and bounded-state losses.

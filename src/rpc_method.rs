@@ -27,8 +27,9 @@ impl RpcRequest {
     /// Return only supported names, never arbitrary client-supplied strings.
     pub(crate) fn log_method(&self) -> &str {
         match self.method.as_str() {
-            name @ ("getrawmempool" | "getblockcount" | "getblockhash" | "getblockchaininfo"
-            | "getnetworkinfo" | "estimatesmartfee" | "getblock" | "sendrawtransaction") => name,
+            name @ ("getfeeobservations" | "getrawmempool" | "getblockcount" | "getblockhash"
+            | "getblockchaininfo" | "getnetworkinfo" | "estimatesmartfee" | "getblock"
+            | "sendrawtransaction") => name,
             _ => "unsupported",
         }
     }
@@ -156,6 +157,47 @@ pub(crate) async fn dispatch(
     }
     let p = &request.params;
     match request.method.as_str() {
+        "getfeeobservations" if p.is_empty() => {
+            let s = sync.fee_observations().map_err(storage)?.ok_or_else(|| {
+                RpcError::new(-32601, "fee observation disabled; enable --mempool")
+            })?;
+            Ok(json!({
+                "source": "recent_selected_block_sample",
+                "trust": "body_integrity_only",
+                "warning": "Historical, unvalidated, partially resolved sample; not a recommended fee or confirmation-target estimate.",
+                "block_hash": s.block_hash.map(|h| h.to_string()),
+                "height": s.height,
+                "selected_tip_hash": s.selected_tip_hash.map(|h| h.to_string()),
+                "blocks_behind_tip": s.blocks_behind_tip,
+                "observed_at": s.observed_at,
+                "age_seconds": s.age_seconds,
+                "stale": s.stale,
+                "non_coinbase_tx_count": s.non_coinbase_tx_count,
+                "sampled_tx_count": s.sampled_tx_count,
+                "resolved_tx_count": s.resolved_tx_count,
+                "budget_unresolved_tx_count": s.budget_unresolved_tx_count,
+                "invalid_tx_count": s.invalid_tx_count,
+                "sampled_input_count": s.sampled_input_count,
+                "resolved_tracked_input_count": s.resolved_tracked_input_count,
+                "tracked_missing_input_count": s.tracked_missing_input_count,
+                "untracked_input_count": s.untracked_input_count,
+                "total_missing_input_count": s.total_missing_input_count,
+                "resolved_percent": s.resolved_percent,
+                "subset_p25_sat_per_vb": s.subset_p25_sat_per_vb,
+                "subset_p50_sat_per_vb": s.subset_p50_sat_per_vb,
+                "subset_p75_sat_per_vb": s.subset_p75_sat_per_vb,
+                "sample_median_lower_sat_per_vb": s.sample_median_lower_sat_per_vb,
+                "sample_median_upper_sat_per_vb": s.sample_median_upper_sat_per_vb,
+                "sample_median_upper_unbounded": s.sample_median_upper_unbounded,
+                "invalid_observation": s.invalid_observation,
+                "output_cache_entries": s.output_cache_entries,
+                "output_cache_blocks": s.output_cache_blocks,
+                "output_cache_evictions": s.output_cache_evictions,
+                "output_cache_allocated_bytes": s.output_cache_allocated_bytes,
+                "body_coverage_complete": s.body_coverage_complete,
+                "body_coverage_target": s.body_coverage_target,
+            }))
+        }
         "getrawmempool" if p.is_empty() || (p.len() == 1 && p[0] == false) => {
             let txids = sync.mempool_snapshot().map_err(storage)?.ok_or_else(|| {
                 RpcError::new(-32601, "mempool observation disabled; enable --mempool")
@@ -264,9 +306,8 @@ pub(crate) async fn dispatch(
             Ok(json!(report.txid.to_string()))
         }
         "getblockcount" | "getblockhash" | "getblockchaininfo" | "getnetworkinfo"
-        | "estimatesmartfee" | "getblock" | "sendrawtransaction" | "getrawmempool" => {
-            Err(RpcError::params())
-        }
+        | "estimatesmartfee" | "getblock" | "sendrawtransaction" | "getrawmempool"
+        | "getfeeobservations" => Err(RpcError::params()),
         _ => Err(RpcError::new(
             -32601,
             "method not supported by guardian-only RPC",

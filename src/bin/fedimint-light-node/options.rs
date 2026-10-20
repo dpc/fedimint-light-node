@@ -215,7 +215,7 @@ pub enum Command {
 /// RPC flags shared by normal startup and explicit serving.
 #[derive(Clone, Debug, Args)]
 pub struct RpcOptions {
-    /// Observe an approximate unvalidated mempool and download recent selected bodies.
+    /// Observe an unvalidated mempool and historical fee samples from recent bodies.
     #[arg(long)]
     pub mempool: bool,
     /// Numeric loopback listen address; use port 0 to select an available port.

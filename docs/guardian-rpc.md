@@ -123,7 +123,7 @@ the actual remaining monotonic time before the next header deadline, with a smal
 cleanup margin, and does not reserve an attempt with less than 250 ms available.
 RPC traffic and failed coverage never reset that header deadline. No full
 five-second attempt is guaranteed; queued requests can consume its allowance.
-The owner discards bodies after extracting fingerprints. Hash/height reconciliation
+The owner discards bodies after extracting fingerprints and bounded fee metadata. Hash/height reconciliation
 removes disconnected and out-of-window buckets before reads, including same-height
 reorganizations. Suppressed entries are removed, not hidden for later resurrection;
 a disconnected block does not manufacture observations. Fingerprint collisions can
@@ -138,6 +138,122 @@ Native `approximate_mempool` diagnostics report pending/covered/target counts,
 fingerprints, evictions, expired entries, coverage-capacity losses and inbox drops.
 The normal diagnostic includes selected generation and tip separately. These are
 not fabricated Core mempool status fields.
+
+## Historical fee observations
+
+`--mempool` also enables `getfeeobservations` (no parameters), an unauthenticated
+read-only native RPC. The library equivalent is `HeaderSync::fee_observations`.
+Disabled mode returns the usual observation-disabled method error (library:
+`None`). Enabled mode starts empty on every restart; a null `block_hash` means
+no retained sample, not zero fees. It needs neither `--fake-bitcoind` nor
+submission authorization and uses the same storage-readiness gate as other reads.
+
+```sh
+cargo run -- --mempool
+# In another terminal:
+bitcoin-cli -datadir=/tmp -conf=/dev/null -rpcconnect=127.0.0.1 -rpcport=18443 getfeeobservations
+```
+
+The component makes **zero network requests**. It inspects selected bodies that
+the existing background coverage or consumer fetches already delivered. It does
+not change coverage priority, download budgets, peer sockets, explorer requests,
+or `FeePolicy`. `estimatesmartfee 1 CONSERVATIVE` retains its exact fixed/unavailable
+behavior. This is not a Core estimator, an automatic recommendation, a mempool
+fee distribution, or a prediction of confirmation time.
+
+Each newly inspected body newer than the active sample supplies one uniform
+sample without replacement: up to 128 transactions, excluding coinbase. Selection
+happens before parent resolution; failures are never replaced by easier samples.
+Duplicate body deliveries and RPC reads do not redraw it. The observer resolves
+full input outpoints against the resident body and a recent-output amount cache;
+later older-body coverage can fill the active sample's missing slots. It retains
+no raw transactions, scripts or witnesses.
+
+Each exact observation needs **all input amounts**. The arithmetic checks amount
+ranges, sums, negative fees and output indices, while body admission also rejects
+duplicate and null inputs. Zero fees are legitimate observations. A parent txid
+binds its outputs, but proves neither unspentness nor script validity. The result
+has `trust=body_integrity_only`; detected contradictions set `invalid_observation`
+and suppress all quantiles and bounds rather than silently dropping bad samples.
+This is additional local arithmetic, not spend or full consensus validation.
+Rates use satoshis divided by `ceil(BIP141_weight / 4)`, not Core's potentially
+sigop-adjusted policy size. Floating-point result fields are finite approximations.
+
+### Reading the result
+
+* `block_hash`, `height`, `selected_tip_hash` and `blocks_behind_tip` identify the
+  historical sample and current **local** selection. `observed_at` is initial
+  wall-clock Unix seconds; `age_seconds` uses monotonic time. Parent resolution
+  does not refresh either. `stale` means no sample, a non-tip sample, or age at
+  least thirty minutes. Neither a false stale flag nor a recent timestamp proves
+  network freshness or consensus validity.
+* `non_coinbase_tx_count`, `sampled_tx_count`, `resolved_tx_count`,
+  `budget_unresolved_tx_count` and `invalid_tx_count` describe transaction coverage.
+  `resolved_percent` is resolved/sample percentage, **not confidence**.
+* `sampled_input_count` is exact. It equals `resolved_tracked_input_count` plus
+  `tracked_missing_input_count` plus `untracked_input_count`. A selected transaction
+  whose whole input set cannot fit the remaining slot budget is kept in the sample
+  but all its inputs are untracked. `total_missing_input_count` is null in that
+  case, otherwise the tracked missing count. No fraction of total input value
+  known can be inferred. Invalid transactions are flagged separately even when
+  some of their tracked inputs lack amounts.
+* `subset_p25_sat_per_vb`, `subset_p50_sat_per_vb` and `subset_p75_sat_per_vb` use
+  nearest ranks `ceil(p * resolved_count)` (one-based), without interpolation;
+  p50 is the lower median for an even count. They remain null until at least
+  32 transactions resolve, or all transactions of a smaller block resolve.
+  This display gate does **not** remove resolution bias.
+* `sample_median_lower_sat_per_vb` and `sample_median_upper_sat_per_vb` bound the
+  **fixed sample's lower median**, conditional on valid nonnegative rates.
+  For sample size `n`, resolved count `r`, missing count `m=n-r`, and rank
+  `k=ceil(n/2)`, the lower endpoint is zero if `k<=m`, otherwise resolved rank
+  `k-m`. The upper is resolved rank `k` if `k<=r`, otherwise null with
+  `sample_median_upper_unbounded=true`. Budget-unresolved transactions count as
+  missing here. Empty or detected-invalid samples have null endpoints and
+  `upper_unbounded=false`. All-resolved bounds collapse to the sample median.
+  These are not confidence intervals for the block or future fee market.
+* `output_cache_blocks`, `output_cache_entries`, `output_cache_evictions` and
+  `output_cache_allocated_bytes` report actual amount-cache retention and losses.
+  Evictions include records discarded or never admitted under capacity pressure,
+  window expiration and selection invalidation. `body_coverage_complete` and
+  `body_coverage_target` report the separate existing fingerprint/body coverage;
+  complete body coverage does not imply complete output or fee coverage.
+
+The resolved subset favors locally available parents. Transactions with many
+inputs are especially likely to remain unresolved; old parents may never appear.
+Even complete individual fee rates omit package incentives, excluded transactions
+and future demand. Do not use a subset quantile as a guaranteed admission threshold.
+
+### Retention and resource limits
+
+There is one active sample and no summary history. Ordinary tip advancement keeps
+the preceding sample available for older-parent resolution until a newer body is
+inspected. Full-hash reconciliation clears all fee state on a detected fork or
+discontinuous window change. A sample or any of its known parent-body provenance
+leaving the selected twenty-block window discards that sample. Amount-cache
+capacity eviction alone does not discard already resolved slots. Seen-body
+identities remain bounded by the window; invalidation does not request or redraw
+an already seen body just to restore a sample. Wait for a newer inspected body.
+
+| Resource | Bound |
+| --- | --- |
+| Amount records | 250,000 records; full outpoint, output count, value and source height |
+| Amount provenance | At most twenty selected body buckets, newest retained under pressure |
+| Sample | 128 transaction metadata entries; no retained raw bodies |
+| Tracked inputs | 4,096 slots including resolved slots, each with full parent-body provenance |
+| Temporary indexes | 128 reservoir positions; 4,096 slot indices for resident-body matching; 128 rates |
+| Total fee-component logical allocation | At most 16 MiB, checked at compile time including allocated capacities, indexes and scratch |
+| RPC | One fixed-size summary per read, under the existing eight-connection reply limit |
+
+On the supported 64-bit build the output record is 56 bytes: 14,000,000 bytes
+for its fixed-capacity vector, plus a 160-byte height index. The allocation occurs
+only after the first admitted body. Remaining sample, identity and scratch budgets
+fit within the 16 MiB cap. Sorting records uses no additional heap index; wanted
+outpoints are matched by a bounded index while scanning each resident body.
+The cache evicts whole oldest buckets and drops incoming older buckets rather
+than displacing newer ones. This is a logical allocation bound, **not** a quota
+on allocator bookkeeping, stack, RSS, caller-owned block memory, existing mempool
+state or serialized RPC copies. No UTXO database, wallet tracking, parent fetching
+or archival recovery is added.
 
 ## Explicit disposable mainnet walkthrough
 
